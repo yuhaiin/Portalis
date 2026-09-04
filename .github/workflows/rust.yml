@@ -86,6 +86,8 @@ jobs:
           echo "$RUNNER_TEMP/${{ matrix.toolchain }}/bin" >> "$GITHUB_PATH"
           echo "TARGET_CC=$RUNNER_TEMP/${{ matrix.toolchain }}/bin/${{ matrix.toolchain }}-gcc" >> "$GITHUB_ENV"
           echo "TARGET_AR=$RUNNER_TEMP/${{ matrix.toolchain }}/bin/${{ matrix.toolchain }}-ar" >> "$GITHUB_ENV"
+          target_env="$(printf '%s' '${{ matrix.target }}' | tr '[:lower:]-' '[:upper:]_')"
+          echo "CARGO_TARGET_${target_env}_LINKER=$RUNNER_TEMP/${{ matrix.toolchain }}/bin/${{ matrix.toolchain }}-gcc" >> "$GITHUB_ENV"
       - name: Build static Netfilter libraries
         run: |
           TARGET_HOST="${{ matrix.host }}" bash ci/build-native.sh "${{ matrix.target }}" > native.env
@@ -117,15 +119,22 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - uses: dtolnay/rust-toolchain@stable
       - name: Install test dependencies
-        run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool make pkg-config xz-utils bzip2 curl podman
+        run: sudo apt-get update && sudo apt-get install -y autoconf automake jq libtool make pkg-config xz-utils bzip2 curl podman
       - name: Build native Netfilter libraries
         run: |
           TARGET_HOST=x86_64-linux-gnu bash ci/build-native.sh x86_64-unknown-linux-gnu > native.env
           cat native.env >> "$GITHUB_ENV"
       - name: Build integration test binary
         run: |
-          cargo test -p portalisd --no-run --locked
-          find target/debug/build/portalisd -type f -perm -111 -name 'portalisd-*' | sort | tail -1 > test-bin
+          test_bin="$(
+            cargo test -p portalisd --no-run --locked --message-format=json-render-diagnostics |
+              jq -r 'select(.reason == "compiler-artifact" and .target.name == "portalisd" and .profile.test == true and .executable != null) | .executable' |
+              tail -n 1
+          )"
+          test -n "$test_bin"
+          test -f "$test_bin"
+          test -x "$test_bin"
+          printf '%s\n' "$test_bin" > test-bin
       - name: Run MinIO backup integration test in an isolated Podman network
         shell: bash
         run: |
@@ -134,11 +143,15 @@ jobs:
           trap 'podman rm -f portalis-minio-integration >/dev/null 2>&1 || true; podman network rm portalis-integration >/dev/null 2>&1 || true' EXIT
           podman run -d --name portalis-minio-integration --network portalis-integration -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin quay.io/minio/minio:latest server /data
           test_bin="$(cat test-bin)"
-          podman run --rm --network portalis-integration -e PORTALIS_S3_ENDPOINT=http://portalis-minio-integration:9000 -v "$PWD/$test_bin:/usr/local/bin/portalisd-test:ro" ubuntu:24.04 bash -c '
+          test -f "$test_bin"
+          test -x "$test_bin"
+          podman run --rm --network portalis-integration -e PORTALIS_S3_ENDPOINT=http://portalis-minio-integration:9000 --mount "type=bind,src=$test_bin,dst=/usr/local/bin/portalisd-test,ro" ubuntu:24.04 bash -c '
             set -euo pipefail
             apt-get update
             DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl libmnl0 libnftnl11
             until curl -fsS http://portalis-minio-integration:9000/minio/health/ready >/dev/null; do sleep 1; done
+            test -f /usr/local/bin/portalisd-test
+            test -x /usr/local/bin/portalisd-test
             /usr/local/bin/portalisd-test minio_round_trip --ignored --nocapture
           '
 
