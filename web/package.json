@@ -1,0 +1,9 @@
+{
+  "name": "portalis-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": { "build": "vite build" },
+  "dependencies": { "react": "latest", "react-dom": "latest" },
+  "devDependencies": { "@types/react": "latest", "@types/react-dom": "latest", "@vitejs/plugin-react": "latest", "vite": "latest", "typescript": "latest" }
+}

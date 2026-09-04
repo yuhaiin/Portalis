@@ -1,0 +1,27 @@
+[Unit]
+Description=Portalis safe nftables forwarding gateway
+Documentation=https://github.com/asutorufa/portalis
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=portalis
+ExecStart=/usr/local/bin/portalisd --listen 127.0.0.1:17890 --control-socket /run/portalis/control.sock serve
+Restart=on-failure
+RestartSec=3s
+RuntimeDirectory=portalis
+RuntimeDirectoryMode=0750
+StateDirectory=portalis
+StateDirectoryMode=0750
+ConfigurationDirectory=portalis
+ConfigurationDirectoryMode=0750
+PrivateTmp=true
+ProtectHome=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_READ_SEARCH
+
+[Install]
+WantedBy=multi-user.target
