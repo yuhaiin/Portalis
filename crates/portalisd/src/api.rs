@@ -89,6 +89,16 @@ async fn authenticate(
             }
         }
     }
+    // The UI bundle contains no instance data. Let it load for a remote browser so the frontend
+    // can receive the API 401 and prompt for the configured password.
+    if !request.uri().path().starts_with("/api/")
+        && (method == Method::GET || method == Method::HEAD)
+    {
+        return next.run(request).await;
+    }
+    if runtime.allow_unauthenticated {
+        return next.run(request).await;
+    }
     let remote = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
@@ -122,7 +132,6 @@ async fn authenticate(
     }
     (
         StatusCode::UNAUTHORIZED,
-        [(header::WWW_AUTHENTICATE, "Basic realm=Portalis")],
         Json(ErrorResponse {
             error: "authentication required; use the setup token or configured password".into(),
         }),

@@ -29,7 +29,11 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - name: Install native dependencies
-        run: sudo apt-get update && sudo apt-get install -y libmnl-dev libnftnl-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool make pkg-config xz-utils bzip2 curl
+      - name: Build native Netfilter libraries
+        run: |
+          TARGET_HOST=x86_64-linux-gnu bash ci/build-native.sh x86_64-unknown-linux-gnu > native.env
+          cat native.env >> "$GITHUB_ENV"
       - name: Build frontend
         working-directory: web
         run: npm ci && npm run build
@@ -105,7 +109,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Install test dependencies
-        run: sudo apt-get update && sudo apt-get install -y libmnl-dev libnftnl-dev pkg-config podman
+        run: sudo apt-get update && sudo apt-get install -y autoconf automake libtool make pkg-config xz-utils bzip2 curl podman
+      - name: Build native Netfilter libraries
+        run: |
+          TARGET_HOST=x86_64-linux-gnu bash ci/build-native.sh x86_64-unknown-linux-gnu > native.env
+          cat native.env >> "$GITHUB_ENV"
       - name: Build integration test binary
         run: |
           cargo test -p portalisd --no-run --locked

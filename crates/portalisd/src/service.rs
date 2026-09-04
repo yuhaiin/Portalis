@@ -9,6 +9,12 @@ pub async fn serve(runtime: Runtime, listen: &str, control_socket: &Path) -> Res
     let address: SocketAddr = listen
         .parse()
         .with_context(|| format!("parse Portalis listen address {listen}"))?;
+    if runtime.allow_unauthenticated {
+        tracing::warn!(
+            %address,
+            "Portalis Web authentication is disabled; anyone who can reach this address can change nftables rules"
+        );
+    }
     tracing::info!(%address, "Portalis listening");
     let listener = TcpListener::bind(address)
         .await
@@ -26,9 +32,33 @@ pub async fn serve(runtime: Runtime, listen: &str, control_socket: &Path) -> Res
         listener,
         web.into_make_service_with_connect_info::<SocketAddr>(),
     )
+    .with_graceful_shutdown(shutdown_signal())
     .await
     .context("serve Portalis Web API")?;
     Ok(())
+}
+
+#[cfg(unix)]
+async fn shutdown_signal() {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install SIGTERM handler");
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => {
+            if let Err(error) = result {
+                tracing::warn!(%error, "could not listen for Ctrl-C");
+            }
+        }
+        _ = terminate.recv() => {}
+    }
+    tracing::info!("Portalis shutdown signal received");
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        tracing::warn!(%error, "could not listen for Ctrl-C");
+    }
+    tracing::info!("Portalis shutdown signal received");
 }
 
 async fn serve_control(runtime: Runtime, socket_path: std::path::PathBuf) -> Result<()> {

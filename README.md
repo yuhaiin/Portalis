@@ -8,7 +8,7 @@ The name comes from “portal”: a controlled gateway between a listening addre
 
 - Save creates a draft. Apply validates the draft and sends one nftables Netlink batch.
 - A rule with TCP and UDP becomes two kernel rules. Equal-length ranges are expanded per port so `12102-12104` maps one-to-one to the target range.
-- SSH ports detected from `/etc/ssh/sshd_config` (22 by default) are rejected. The default web listener is `127.0.0.1:17890`; exposing it elsewhere requires a password for non-loopback clients.
+- SSH ports detected from `/etc/ssh/sshd_config` (22 by default) are rejected. The default web listener is `127.0.0.1:17890`; exposing it elsewhere requires a password for non-loopback clients. For an isolated Podman test only, `--allow-unauthenticated` disables Web authentication.
 - Portalis uses passive NAT chains with `accept` policy. Existing firewall policy remains responsible for forwarding; the UI warns about forwarding/sysctl and kernel drift.
 - IPv4/IPv6 forwarding is enabled only when an active rule requires that family, and persisted in `/etc/sysctl.d/99-portalis.conf`.
 - Route selection failures are warnings only. A destination being temporarily offline never prevents a valid nftables transaction from applying.
@@ -31,6 +31,8 @@ ssh -L 17890:127.0.0.1:17890 root@your-vps
 ```
 
 The first start creates `/var/lib/portalis/web-auth.secret` with mode 0600. Loopback requests are passwordless by design. Configure a 12+ character password in Settings before changing `--listen` to a non-loopback address. The CLI uses `/run/portalis/control.sock` and is intended for root or a dedicated local `portalis` group.
+
+For a disposable, trusted-network test container, start the daemon with `--listen 0.0.0.0:17890 --allow-unauthenticated`. Do not use this option on a VPS or any address reachable by untrusted users: it allows anyone who can connect to change nftables rules. To set the Web password while starting the daemon, use `--web-password 'a-password-of-at-least-12-chars'` (or `PORTALIS_WEB_PASSWORD`); the value is persisted as a hash. Command-line arguments can be visible to local users through process inspection, so prefer the environment variable or loopback/SSH-tunnel setup for production.
 
 ## Usage
 

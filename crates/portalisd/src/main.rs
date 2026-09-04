@@ -31,6 +31,18 @@ struct Cli {
     config: PathBuf,
     #[arg(long, env = "PORTALIS_LISTEN", default_value = "127.0.0.1:17890")]
     listen: String,
+    /// Disable Web authentication. Only use this on a trusted or isolated network.
+    #[arg(long, env = "PORTALIS_ALLOW_UNAUTHENTICATED", default_value_t = false)]
+    allow_unauthenticated: bool,
+    /// Set or replace the persisted Web password before serving.
+    #[arg(
+        long = "web-password",
+        visible_alias = "password",
+        env = "PORTALIS_WEB_PASSWORD",
+        value_name = "PASSWORD",
+        hide_env_values = true
+    )]
+    web_password: Option<String>,
     #[arg(
         long,
         env = "PORTALIS_CONTROL_SOCKET",
@@ -69,7 +81,19 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let command = cli.command.unwrap_or(Command::Serve);
-    let runtime = app::Runtime::open(&cli.data_dir, &cli.config).await?;
+    if cli.allow_unauthenticated && cli.web_password.is_some() {
+        anyhow::bail!("--allow-unauthenticated cannot be combined with --web-password");
+    }
+    if cli.web_password.is_some() && !matches!(&command, Command::Serve) {
+        anyhow::bail!("--web-password can only be used with the serve command");
+    }
+    let runtime = app::Runtime::open(
+        &cli.data_dir,
+        &cli.config,
+        cli.allow_unauthenticated,
+        cli.web_password.as_deref(),
+    )
+    .await?;
     match command {
         Command::Serve => service::serve(runtime, &cli.listen, &cli.control_socket).await,
         Command::Status => service::print_status(&runtime).await,

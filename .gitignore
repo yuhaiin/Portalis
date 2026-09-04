@@ -1,4 +1,6 @@
 /target/
+/.native/
 /web/node_modules/
 .DS_Store
 .codebase-index
+/web/dist/

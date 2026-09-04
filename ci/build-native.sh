@@ -23,9 +23,10 @@ build_one() {
   if [[ ! -f "$root/lib/lib${output_name}.a" ]]; then
     if [[ ! -d "$dir" ]]; then tar -xf "$src/$archive" -C "$src"; fi
     pushd "$dir" >/dev/null
-    ./configure --host="$host" --prefix="$root" --disable-shared --enable-static CC="$cc" AR="$ar" CFLAGS="-O2" LDFLAGS="-static"
-    make -j"$(nproc)"
-    make install
+    # stdout is reserved for the LIB*=... lines consumed by GitHub Actions.
+    ./configure --host="$host" --prefix="$root" --disable-shared --enable-static CC="$cc" AR="$ar" CFLAGS="-O2" LDFLAGS="-static" >&2
+    make -j"$(nproc)" >&2
+    make install >&2
     popd >/dev/null
   fi
 }

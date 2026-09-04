@@ -30,6 +30,8 @@ use std::{
 };
 use thiserror::Error;
 
+const RULE_COMMENT_VERSION: &str = "v2";
+
 #[derive(Debug, Error)]
 pub enum NftError {
     #[error("nftables Netlink error: {0}")]
@@ -289,8 +291,11 @@ fn set_rule_comment(rule: &mut Rule<'_>, plan: &RulePlan) -> std::result::Result
         Protocol::Tcp => "tcp",
         Protocol::Udp => "udp",
     };
-    let comment = CString::new(format!("portalis:{}:{}", plan.rule_id, protocol))
-        .map_err(|_| NftError::Library("rule id contains NUL".into()))?;
+    let comment = CString::new(format!(
+        "portalis:{RULE_COMMENT_VERSION}:{}:{protocol}",
+        plan.rule_id
+    ))
+    .map_err(|_| NftError::Library("rule id contains NUL".into()))?;
     rule.set_comment(comment)
         .map_err(|error| NftError::Library(error.into()))
 }
@@ -319,8 +324,10 @@ fn add_port_match(rule: &mut Rule<'_>, protocol: Protocol, ports: PortRange) {
         Protocol::Tcp => rule.add_expr(&nft_expr!(payload tcp dport)),
         Protocol::Udp => rule.add_expr(&nft_expr!(payload udp dport)),
     }
-    rule.add_expr(&Cmp::new(CmpOp::Gte, ports.start.to_be()));
-    if ports.end != ports.start {
+    if ports.start == ports.end {
+        rule.add_expr(&Cmp::new(CmpOp::Eq, ports.start.to_be()));
+    } else {
+        rule.add_expr(&Cmp::new(CmpOp::Gte, ports.start.to_be()));
         rule.add_expr(&Cmp::new(CmpOp::Lte, ports.end.to_be()));
     }
 }
@@ -660,6 +667,9 @@ fn parse_comment(comment: &str) -> Option<(uuid::Uuid, Protocol)> {
     if parts.next()? != "portalis" {
         return None;
     }
+    if parts.next()? != RULE_COMMENT_VERSION {
+        return None;
+    }
     let id = parts.next()?.parse().ok()?;
     let protocol = match parts.next()? {
         "tcp" => Protocol::Tcp,
@@ -679,9 +689,10 @@ mod tests {
     fn comments_round_trip_to_rule_identity() {
         let id = uuid::Uuid::new_v4();
         assert_eq!(
-            parse_comment(&format!("portalis:{id}:tcp")),
+            parse_comment(&format!("portalis:{RULE_COMMENT_VERSION}:{id}:tcp")),
             Some((id, Protocol::Tcp))
         );
+        assert!(parse_comment(&format!("portalis:{id}:tcp")).is_none());
         assert!(parse_comment("other:rule").is_none());
     }
 
@@ -800,6 +811,35 @@ mod tests {
         assert!(!status.drifted);
         assert_eq!(status.counters.len(), 2);
         assert!(status.counters.iter().any(|counter| counter.packets > 0));
+        let packets_before = status
+            .counters
+            .iter()
+            .map(|counter| counter.packets)
+            .sum::<u64>();
+        assert!(
+            std::process::Command::new("nsenter")
+                .args([
+                    "-t",
+                    &peer_pid,
+                    "-n",
+                    "sh",
+                    "-c",
+                    "printf out-of-range | nc -u -w 1 198.18.0.1 18082"
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let status_after_out_of_range = controller
+            .status(&config)
+            .expect("dump after out-of-range packet");
+        let packets_after = status_after_out_of_range
+            .counters
+            .iter()
+            .map(|counter| counter.packets)
+            .sum::<u64>();
+        assert_eq!(packets_after, packets_before);
         assert!(controller.table_snapshot().unwrap().contains("portalis:"));
         let _ = peer.kill();
         let _ = peer.wait();

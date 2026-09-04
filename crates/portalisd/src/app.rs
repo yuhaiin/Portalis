@@ -19,16 +19,29 @@ pub struct Runtime {
     pub auth: Arc<RwLock<AuthState>>,
     pub data_dir: PathBuf,
     pub config_path: PathBuf,
+    pub allow_unauthenticated: bool,
 }
 
 impl Runtime {
-    pub async fn open(data_dir: &Path, config_path: &Path) -> Result<Self> {
+    pub async fn open(
+        data_dir: &Path,
+        config_path: &Path,
+        allow_unauthenticated: bool,
+        web_password: Option<&str>,
+    ) -> Result<Self> {
         std::fs::create_dir_all(data_dir)?;
         if let Some(parent) = config_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let db = Database::open(&data_dir.join("portalis.sqlite3"))?;
-        let auth = AuthState::load_or_initialize(data_dir)?;
+        let mut auth = AuthState::load_or_initialize(data_dir)?;
+        if let Some(password) = web_password {
+            if password.chars().count() < 12 {
+                anyhow::bail!("web password must contain at least 12 characters");
+            }
+            auth.set_password(password, data_dir)?;
+            tracing::info!("Portalis Web password updated from the command line");
+        }
         let nft: Arc<dyn NftController> = Arc::new(NftnlController::new());
         if let Some(config) = db.active_config()? {
             let needs_restore = nft
@@ -60,6 +73,7 @@ impl Runtime {
             auth: Arc::new(RwLock::new(auth)),
             data_dir: data_dir.to_path_buf(),
             config_path: config_path.to_path_buf(),
+            allow_unauthenticated,
         })
     }
 
