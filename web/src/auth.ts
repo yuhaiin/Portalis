@@ -9,9 +9,32 @@ export function rememberCredential(storage: Pick<Storage, "setItem">, credential
   storage.setItem(credentialStorageKey, credential);
 }
 
-export function forgetCredential(storage: Pick<Storage, "removeItem">): void {
+export function forgetCredential(storage: Pick<Storage, "getItem" | "removeItem">, expected?: string): void {
+  if (expected && readCredential(storage) !== expected) return;
   storage.removeItem(credentialStorageKey);
   storage.removeItem(legacyPasswordStorageKey);
+}
+
+let credentialRecovery: Promise<string | null> | null = null;
+
+export function recoverCredential(
+  storage: Pick<Storage, "setItem">,
+  prompt: () => Promise<string | null>,
+): Promise<string | null> {
+  if (!credentialRecovery) {
+    credentialRecovery = prompt()
+      .then(credential => {
+        if (credential) rememberCredential(storage, credential);
+        return credential;
+      })
+      .finally(() => { credentialRecovery = null; });
+  }
+  return credentialRecovery;
+}
+
+export async function waitForCredential(storage: Pick<Storage, "getItem">): Promise<string | null> {
+  if (credentialRecovery) await credentialRecovery;
+  return readCredential(storage);
 }
 
 export function authHeaders(credential: string | null): Record<string, string> {

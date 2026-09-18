@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
 import { IconAlertTriangle, IconArrowsExchange, IconCheck, IconChevronDown, IconCircleCheck, IconCloudUpload, IconDotsVertical, IconLayoutDashboard, IconPlus, IconRefresh, IconSearch, IconServer, IconSettings, IconShieldCheck, IconUserCircle } from "@tabler/icons-react";
 import { createRoot } from "react-dom/client";
-import { buildRequestHeaders, forgetCredential, readCredential, rememberCredential } from "./auth";
+import { buildRequestHeaders, forgetCredential, readCredential, recoverCredential, waitForCredential } from "./auth";
 import "./styles.css";
 
 type Family = "auto" | "ipv4" | "ipv6";
@@ -130,12 +130,18 @@ const fmtDate = (value?: string) => value ? new Date(value).toLocaleString() : "
 const fmtPortRange = (value: { start: number; end: number }) => value.start === value.end ? String(value.start) : `${value.start}–${value.end}`;
 
 async function api<T>(path: string, init?: RequestInit, options: { onPasswordRequired?: () => Promise<string | null>; retrying?: boolean } = {}): Promise<T> {
-  const credential = readCredential(sessionStorage);
+  const credential = await waitForCredential(sessionStorage);
   const response = await fetch(path, { ...init, headers: buildRequestHeaders(credential, init?.headers) });
   if (!response.headers.get("content-type")?.includes("application/json")) throw new Error(`API endpoint unavailable (${response.status})`);
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401 && options.retrying) forgetCredential(sessionStorage);
-  if (response.status === 401 && !options.retrying && options.onPasswordRequired) { forgetCredential(sessionStorage); const entered = await options.onPasswordRequired(); if (entered) { rememberCredential(sessionStorage, entered); return api<T>(path, init, { ...options, retrying: true }); } }
+  if (response.status === 401 && options.retrying) forgetCredential(sessionStorage, credential || undefined);
+  if (response.status === 401 && !options.retrying && options.onPasswordRequired) {
+    const currentCredential = readCredential(sessionStorage);
+    if (currentCredential && currentCredential !== credential) return api<T>(path, init, { ...options, retrying: true });
+    forgetCredential(sessionStorage, credential || undefined);
+    const entered = await recoverCredential(sessionStorage, options.onPasswordRequired);
+    if (entered) return api<T>(path, init, { ...options, retrying: true });
+  }
   if (!response.ok) throw new Error(data.error || data.errors?.join("; ") || `Request failed (${response.status})`);
   return data as T;
 }
