@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
 import { IconAlertTriangle, IconArrowsExchange, IconCheck, IconChevronDown, IconCircleCheck, IconCloudUpload, IconDotsVertical, IconLayoutDashboard, IconPlus, IconRefresh, IconSearch, IconServer, IconSettings, IconShieldCheck, IconUserCircle } from "@tabler/icons-react";
 import { createRoot } from "react-dom/client";
+import { authHeaders, forgetCredential, readCredential, rememberCredential } from "./auth";
 import "./styles.css";
 
 type Family = "auto" | "ipv4" | "ipv6";
@@ -128,12 +129,13 @@ const fmtBytes = (value: number) => value < 1024 ? `${value} B` : value < 104857
 const fmtDate = (value?: string) => value ? new Date(value).toLocaleString() : "—";
 const fmtPortRange = (value: { start: number; end: number }) => value.start === value.end ? String(value.start) : `${value.start}–${value.end}`;
 
-async function api<T>(path: string, init?: RequestInit, options: { onPasswordRequired?: () => Promise<string | null> } = {}): Promise<T> {
-  const password = sessionStorage.getItem("portalis-password");
-  const response = await fetch(path, { headers: { "content-type": "application/json", ...(password ? { "x-portalis-password": password } : {}), ...(init?.headers || {}) }, ...init });
+async function api<T>(path: string, init?: RequestInit, options: { onPasswordRequired?: () => Promise<string | null>; retrying?: boolean } = {}): Promise<T> {
+  const credential = readCredential(sessionStorage);
+  const response = await fetch(path, { headers: { "content-type": "application/json", ...authHeaders(credential), ...(init?.headers || {}) }, ...init });
   if (!response.headers.get("content-type")?.includes("application/json")) throw new Error(`API endpoint unavailable (${response.status})`);
   const data = await response.json().catch(() => ({}));
-  if (response.status === 401 && !password && options.onPasswordRequired) { const entered = await options.onPasswordRequired(); if (entered) { sessionStorage.setItem("portalis-password", entered); return api<T>(path, init, options); } }
+  if (response.status === 401 && options.retrying) forgetCredential(sessionStorage);
+  if (response.status === 401 && !options.retrying && options.onPasswordRequired) { forgetCredential(sessionStorage); const entered = await options.onPasswordRequired(); if (entered) { rememberCredential(sessionStorage, entered); return api<T>(path, init, { ...options, retrying: true }); } }
   if (!response.ok) throw new Error(data.error || data.errors?.join("; ") || `Request failed (${response.status})`);
   return data as T;
 }
@@ -154,7 +156,7 @@ function App() {
   const passwordPrompt = useRef<Promise<string | null> | null>(null);
   const requestPassword = useCallback(() => {
     if (!passwordPrompt.current) {
-      const pending = dialog.prompt(t("Authentication required", "需要认证"), t("Enter the Portalis password to continue.", "请输入 Portalis 密码以继续。"), { submitLabel: t("Continue", "继续"), cancelLabel: t("Cancel", "取消"), placeholder: t("Password", "密码") }).finally(() => { passwordPrompt.current = null; });
+      const pending = dialog.prompt(t("Authentication required", "需要认证"), t("Enter the Portalis password or setup token to continue.", "请输入 Portalis 密码或 setup token 以继续。"), { submitLabel: t("Continue", "继续"), cancelLabel: t("Cancel", "取消"), placeholder: t("Password or setup token", "密码或 setup token") }).finally(() => { passwordPrompt.current = null; });
       passwordPrompt.current = pending;
     }
     return passwordPrompt.current;

@@ -30,7 +30,7 @@ ssh -L 17890:127.0.0.1:17890 root@your-vps
 # browser: http://127.0.0.1:17890
 ```
 
-The first start creates `/var/lib/portalis/web-auth.secret` with mode 0600. Loopback requests are passwordless by design. Configure a 12+ character password in Settings before changing `--listen` to a non-loopback address. The CLI uses `/run/portalis/control.sock` and is intended for root or a dedicated local `portalis` group.
+The first start creates `/var/lib/portalis/web-auth.secret` with mode 0600. Loopback requests are passwordless by design. If you open the UI from a non-loopback address before setting a password, enter the contents of this setup-token file when prompted, then configure a 12+ character password in Settings. The CLI uses `/run/portalis/control.sock` and is intended for root or a dedicated local `portalis` group.
 
 For a disposable, trusted-network test container, start the daemon with `--listen 0.0.0.0:17890 --allow-unauthenticated`. Do not use this option on a VPS or any address reachable by untrusted users: it allows anyone who can connect to change nftables rules. To set the Web password while starting the daemon, use `--web-password 'a-password-of-at-least-12-chars'` (or `PORTALIS_WEB_PASSWORD`); the value is persisted as a hash. Command-line arguments can be visible to local users through process inspection, so prefer the environment variable or loopback/SSH-tunnel setup for production.
 
