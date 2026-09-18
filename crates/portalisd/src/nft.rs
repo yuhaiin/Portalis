@@ -16,8 +16,8 @@ use nftnl::{
 };
 use nftnl_sys::{self as sys, libc};
 use portalis_core::{
-    AddressFamily, Config, KernelStatus, ListenAddress, PortRange, Protocol, RuleCounter, RulePlan,
-    SnatMode, TABLE_NAME,
+    AddressFamily, Config, FORWARD_CHAIN, KernelStatus, ListenAddress, PortRange, Protocol,
+    RuleCounter, RulePlan, SnatMode, TABLE_NAME,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -98,6 +98,15 @@ impl NftController for NftnlController {
         postrouting.set_policy(Policy::Accept);
         batch.add(&postrouting, MsgType::Add);
 
+        // NAT chains only inspect the first packet of each flow. Keep traffic accounting in a
+        // filter chain so the counters include the complete forwarded flow without making this
+        // table responsible for accepting or dropping packets.
+        let mut forward = Chain::new(c"portalis_forward", &table);
+        forward.set_hook(Hook::Forward, 0);
+        forward.set_type(ChainType::Filter);
+        forward.set_policy(Policy::Accept);
+        batch.add(&forward, MsgType::Add);
+
         let plans = config.plan();
         for plan in &plans {
             add_prerouting_rules(&mut batch, &prerouting, plan)?;
@@ -106,6 +115,9 @@ impl NftController for NftnlController {
             if !matches!(plan.snat, SnatMode::None) {
                 add_postrouting_rule(&mut batch, &postrouting, plan)?;
             }
+        }
+        for plan in &plans {
+            add_forward_counter_rules(&mut batch, &forward, plan)?;
         }
 
         send_batch(&batch.finalize())?;
@@ -143,29 +155,13 @@ impl NftController for NftnlController {
             });
         }
         let dump = dump_rules()?;
-        let mut counters: HashMap<(uuid::Uuid, Protocol), (u64, u64)> = HashMap::new();
-        let mut observed_rule_counts: HashMap<(uuid::Uuid, Protocol), usize> = HashMap::new();
-        for rule in &dump {
-            // Count ingress matches once. A SNAT rule has a second counter in postrouting, but
-            // adding it would report every forwarded packet twice to the UI.
-            if rule.chain == "portalis_prerouting" {
-                if let Some((id, protocol)) = parse_comment(&rule.comment) {
-                    let entry = counters.entry((id, protocol)).or_default();
-                    entry.0 = entry.0.saturating_add(rule.packets);
-                    entry.1 = entry.1.saturating_add(rule.bytes);
-                    *observed_rule_counts.entry((id, protocol)).or_default() += 1;
-                }
-            }
-        }
+        let (counters, observed_rule_counts) = aggregate_rule_counters(&dump);
         let mut expected = HashSet::new();
         let mut expected_rule_counts = HashMap::new();
         for plan in config.plan() {
             let key = (plan.rule_id, plan.protocol);
             expected.insert(key);
-            expected_rule_counts.insert(
-                key,
-                plan.source_cidrs.len().max(1) * plan.listen_port.len() as usize,
-            );
+            expected_rule_counts.insert(key, plan.source_cidrs.len().max(1) * 2);
         }
         let result = counters
             .into_iter()
@@ -206,6 +202,57 @@ struct DumpedRule {
     comment: String,
     packets: u64,
     bytes: u64,
+}
+
+type CounterKey = (uuid::Uuid, Protocol);
+type CounterValues = (u64, u64);
+type CounterMap = HashMap<CounterKey, CounterValues>;
+type ObservedRuleCounts = HashMap<CounterKey, usize>;
+
+fn aggregate_rule_counters(dump: &[DumpedRule]) -> (CounterMap, ObservedRuleCounts) {
+    let mut counters = CounterMap::new();
+    let mut observed_rule_counts = ObservedRuleCounts::new();
+    for rule in dump {
+        if rule.chain != FORWARD_CHAIN {
+            continue;
+        }
+        if let Some((id, protocol)) = parse_comment(&rule.comment) {
+            let entry = counters.entry((id, protocol)).or_insert((0, 0));
+            entry.0 = entry.0.saturating_add(rule.packets);
+            entry.1 = entry.1.saturating_add(rule.bytes);
+            *observed_rule_counts.entry((id, protocol)).or_insert(0) += 1;
+        }
+    }
+    (counters, observed_rule_counts)
+}
+
+struct OriginalConntrackField {
+    key: u32,
+}
+
+impl OriginalConntrackField {
+    fn new(key: u32) -> Self {
+        Self { key }
+    }
+}
+
+impl Expression for OriginalConntrackField {
+    fn to_expr(&self, _rule: &Rule) -> ptr::NonNull<sys::nftnl_expr> {
+        let expr = unsafe {
+            ptr::NonNull::new(sys::nftnl_expr_alloc(c"ct".as_ptr()))
+                .expect("nftnl allocation failed")
+        };
+        unsafe {
+            sys::nftnl_expr_set_u32(
+                expr.as_ptr(),
+                sys::NFTNL_EXPR_CT_DREG as u16,
+                Register::Reg1.to_raw(),
+            );
+            sys::nftnl_expr_set_u32(expr.as_ptr(), sys::NFTNL_EXPR_CT_KEY as u16, self.key);
+            sys::nftnl_expr_set_u8(expr.as_ptr(), sys::NFTNL_EXPR_CT_DIR as u16, 0);
+        }
+        expr
+    }
 }
 
 fn add_prerouting_rules(
@@ -266,10 +313,7 @@ fn add_postrouting_rule(
 ) -> std::result::Result<(), NftError> {
     let mut rule = Rule::new(chain);
     set_rule_comment(&mut rule, plan)?;
-    rule.add_expr(&nft_expr!(ct status));
-    let mask = ConntrackStatus::DST_NAT.bits();
-    rule.add_expr(&Bitwise::new(mask, 0u32));
-    rule.add_expr(&Cmp::new(CmpOp::Eq, mask));
+    add_dnat_status_match(&mut rule);
     add_family_match(&mut rule, plan.family);
     add_address_match(&mut rule, plan.target_ip, false);
     add_protocol_match(&mut rule, plan.protocol);
@@ -284,6 +328,64 @@ fn add_postrouting_rule(
     }
     batch.add(&rule, MsgType::Add);
     Ok(())
+}
+
+fn add_forward_counter_rules(
+    batch: &mut Batch,
+    chain: &Chain<'_>,
+    plan: &RulePlan,
+) -> std::result::Result<(), NftError> {
+    let sources: Vec<Option<&ipnet::IpNet>> = if plan.source_cidrs.is_empty() {
+        vec![None]
+    } else {
+        plan.source_cidrs.iter().map(Some).collect()
+    };
+
+    for source in sources {
+        let mut inbound = Rule::new(chain);
+        set_rule_comment(&mut inbound, plan)?;
+        add_dnat_status_match(&mut inbound);
+        add_family_match(&mut inbound, plan.family);
+        add_original_address_match(&mut inbound, &plan.listen_address);
+        if let Some(interface) = &plan.listen_interface {
+            let name = CString::new(interface.as_str())
+                .map_err(|_| NftError::Library("interface contains NUL".into()))?;
+            inbound.add_expr(&nft_expr!(meta iifname));
+            inbound.add_expr(&Cmp::new(CmpOp::Eq, InterfaceName::Exact(name)));
+        }
+        if let Some(source) = source {
+            add_cidr_match(&mut inbound, *source, true);
+        }
+        add_protocol_match(&mut inbound, plan.protocol);
+        add_original_port_match(&mut inbound, plan.listen_port);
+        add_address_match(&mut inbound, plan.target_ip, false);
+        add_port_match(&mut inbound, plan.protocol, plan.target_port);
+        inbound.add_expr(&nft_expr!(counter));
+        batch.add(&inbound, MsgType::Add);
+
+        let mut reply = Rule::new(chain);
+        set_rule_comment(&mut reply, plan)?;
+        add_dnat_status_match(&mut reply);
+        add_family_match(&mut reply, plan.family);
+        add_original_address_match(&mut reply, &plan.listen_address);
+        if let Some(source) = source {
+            add_original_cidr_match(&mut reply, *source);
+        }
+        add_protocol_match(&mut reply, plan.protocol);
+        add_original_port_match(&mut reply, plan.listen_port);
+        add_address_match(&mut reply, plan.target_ip, true);
+        add_source_port_match(&mut reply, plan.protocol, plan.target_port);
+        reply.add_expr(&nft_expr!(counter));
+        batch.add(&reply, MsgType::Add);
+    }
+    Ok(())
+}
+
+fn add_dnat_status_match(rule: &mut Rule<'_>) {
+    rule.add_expr(&nft_expr!(ct status));
+    let mask = ConntrackStatus::DST_NAT.bits();
+    rule.add_expr(&Bitwise::new(mask, 0u32));
+    rule.add_expr(&Cmp::new(CmpOp::Eq, mask));
 }
 
 fn set_rule_comment(rule: &mut Rule<'_>, plan: &RulePlan) -> std::result::Result<(), NftError> {
@@ -324,6 +426,23 @@ fn add_port_match(rule: &mut Rule<'_>, protocol: Protocol, ports: PortRange) {
         Protocol::Tcp => rule.add_expr(&nft_expr!(payload tcp dport)),
         Protocol::Udp => rule.add_expr(&nft_expr!(payload udp dport)),
     }
+    add_port_range_match(rule, ports);
+}
+
+fn add_source_port_match(rule: &mut Rule<'_>, protocol: Protocol, ports: PortRange) {
+    match protocol {
+        Protocol::Tcp => rule.add_expr(&nft_expr!(payload tcp sport)),
+        Protocol::Udp => rule.add_expr(&nft_expr!(payload udp sport)),
+    }
+    add_port_range_match(rule, ports);
+}
+
+fn add_original_port_match(rule: &mut Rule<'_>, ports: PortRange) {
+    rule.add_expr(&OriginalConntrackField::new(libc::NFT_CT_PROTO_DST as u32));
+    add_port_range_match(rule, ports);
+}
+
+fn add_port_range_match(rule: &mut Rule<'_>, ports: PortRange) {
     if ports.start == ports.end {
         rule.add_expr(&Cmp::new(CmpOp::Eq, ports.start.to_be()));
     } else {
@@ -365,6 +484,33 @@ fn add_cidr_match(rule: &mut Rule<'_>, cidr: ipnet::IpNet, _source: bool) {
         }
         ipnet::IpNet::V6(network) => {
             rule.add_expr(&nft_expr!(payload ipv6 saddr));
+            let mask = network.netmask().octets();
+            let address = network.network().octets();
+            let xor = [0u8; 16];
+            rule.add_expr(&Bitwise::new(mask.as_slice(), xor.as_slice()));
+            rule.add_expr(&Cmp::new(CmpOp::Eq, std::net::Ipv6Addr::from(address)));
+        }
+    }
+}
+
+fn add_original_address_match(rule: &mut Rule<'_>, address: &ListenAddress) {
+    if let ListenAddress::Address(address) = address {
+        rule.add_expr(&OriginalConntrackField::new(libc::NFT_CT_DST as u32));
+        rule.add_expr(&Cmp::new(CmpOp::Eq, *address));
+    }
+}
+
+fn add_original_cidr_match(rule: &mut Rule<'_>, cidr: ipnet::IpNet) {
+    rule.add_expr(&OriginalConntrackField::new(libc::NFT_CT_SRC as u32));
+    match cidr {
+        ipnet::IpNet::V4(network) => {
+            let mask = network.netmask().octets();
+            let address = network.network().octets();
+            let xor = [0u8; 4];
+            rule.add_expr(&Bitwise::new(mask.as_slice(), xor.as_slice()));
+            rule.add_expr(&Cmp::new(CmpOp::Eq, std::net::Ipv4Addr::from(address)));
+        }
+        ipnet::IpNet::V6(network) => {
             let mask = network.netmask().octets();
             let address = network.network().octets();
             let xor = [0u8; 16];
@@ -697,6 +843,36 @@ mod tests {
     }
 
     #[test]
+    fn forward_counters_aggregate_packets_from_each_direction() {
+        let id = uuid::Uuid::new_v4();
+        let comment = format!("portalis:{RULE_COMMENT_VERSION}:{id}:tcp");
+        let dump = vec![
+            DumpedRule {
+                chain: "portalis_prerouting".into(),
+                comment: comment.clone(),
+                packets: 1,
+                bytes: 60,
+            },
+            DumpedRule {
+                chain: "portalis_forward".into(),
+                comment: comment.clone(),
+                packets: 100,
+                bytes: 1_000_000,
+            },
+            DumpedRule {
+                chain: "portalis_forward".into(),
+                comment,
+                packets: 50,
+                bytes: 2_000_000,
+            },
+        ];
+
+        let (counters, observed_rule_counts) = aggregate_rule_counters(&dump);
+        assert_eq!(counters[&(id, Protocol::Tcp)], (150, 3_000_000));
+        assert_eq!(observed_rule_counts[&(id, Protocol::Tcp)], 2);
+    }
+
+    #[test]
     #[ignore = "requires CAP_NET_ADMIN in a disposable network namespace"]
     fn netlink_apply_and_counter_dump() {
         if std::env::var_os("PORTALIS_NFT_INTEGRATION").is_none() {
@@ -718,7 +894,7 @@ mod tests {
                 source_cidrs: Vec::new(),
                 protocols: Protocols::BOTH,
                 listen_port: PortRange::new(18080, 18081),
-                target_ip: "127.0.0.1".parse().unwrap(),
+                target_ip: "198.18.0.2".parse().unwrap(),
                 target_port: PortRange::new(28080, 28081),
                 snat: SnatMode::Masquerade,
             }],

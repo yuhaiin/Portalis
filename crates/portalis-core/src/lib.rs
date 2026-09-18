@@ -16,6 +16,7 @@ pub const SCHEMA_VERSION: u32 = 1;
 pub const TABLE_NAME: &str = "portalis";
 pub const PREROUTING_CHAIN: &str = "portalis_prerouting";
 pub const POSTROUTING_CHAIN: &str = "portalis_postrouting";
+pub const FORWARD_CHAIN: &str = "portalis_forward";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
