@@ -125,7 +125,7 @@ async fn authenticate(
         });
     let auth = runtime.auth.read().await;
     let authenticated = bearer.is_some_and(|token| auth.verify_token(token))
-        || password.is_some_and(|value| auth.verify_password(value))
+        || password.is_some_and(|value| auth.verify_credential(value))
         || basic_password.is_some_and(|value| auth.verify_password(&value));
     if is_loopback || authenticated {
         return next.run(request).await;

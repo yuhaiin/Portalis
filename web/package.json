@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node scripts/auth-regression.mjs"
+    "test": "node --experimental-strip-types scripts/auth-regression.mjs"
   },
   "dependencies": {
     "@tabler/icons-react": "^3.46.0",

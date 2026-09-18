@@ -55,6 +55,10 @@ impl AuthState {
             .is_ok()
     }
 
+    pub fn verify_credential(&self, credential: &str) -> bool {
+        self.verify_token(credential) || self.verify_password(credential)
+    }
+
     pub fn set_password(&mut self, password: &str, data_dir: &Path) -> Result<()> {
         let mut salt_bytes = [0u8; 16];
         getrandom::fill(&mut salt_bytes)
@@ -91,4 +95,24 @@ fn restrict_file(path: &Path) -> Result<()> {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AuthState;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn setup_token_is_accepted_as_credential() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let data_dir = std::env::temp_dir().join(format!("portalis-auth-test-{suffix}"));
+        let auth = AuthState::load_or_initialize(&data_dir).expect("initialize auth state");
+        let token = std::fs::read_to_string(auth.secret_path()).expect("read setup token");
+        let accepted = auth.verify_credential(token.trim());
+        std::fs::remove_dir_all(&data_dir).expect("remove auth test data");
+        assert!(accepted);
+    }
 }

@@ -1,15 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { buildRequestHeaders } from "../src/auth.ts";
 
-const source = readFileSync(resolve("src/auth.ts"), "utf8");
-const mainSource = readFileSync(resolve("src/main.tsx"), "utf8");
-assert.match(source, /"Authorization": `Bearer \$\{credential\}`/);
-assert.match(source, /"x-portalis-password": credential/);
-assert.match(source, /credential\s+\?/);
-assert.match(source, /removeItem\(credentialStorageKey\)/);
-assert.match(mainSource, /password or setup token/i);
-assert.match(mainSource, /密码或 setup token/);
-assert.match(mainSource, /!options\.retrying && options\.onPasswordRequired/);
+const headers = buildRequestHeaders("<REDACTED>", { "x-client-header": "preserved" });
+assert.equal(headers.get("authorization"), "Bearer <REDACTED>");
+assert.equal(headers.get("x-portalis-password"), "<REDACTED>");
+assert.equal(headers.get("x-client-header"), "preserved");
+assert.equal(headers.get("content-type"), "application/json");
+
+const noCredential = buildRequestHeaders(null);
+assert.equal(noCredential.get("authorization"), null);
 
 console.log("auth regression: ok");

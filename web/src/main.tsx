@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
 import { IconAlertTriangle, IconArrowsExchange, IconCheck, IconChevronDown, IconCircleCheck, IconCloudUpload, IconDotsVertical, IconLayoutDashboard, IconPlus, IconRefresh, IconSearch, IconServer, IconSettings, IconShieldCheck, IconUserCircle } from "@tabler/icons-react";
 import { createRoot } from "react-dom/client";
-import { authHeaders, forgetCredential, readCredential, rememberCredential } from "./auth";
+import { buildRequestHeaders, forgetCredential, readCredential, rememberCredential } from "./auth";
 import "./styles.css";
 
 type Family = "auto" | "ipv4" | "ipv6";
@@ -131,7 +131,7 @@ const fmtPortRange = (value: { start: number; end: number }) => value.start === 
 
 async function api<T>(path: string, init?: RequestInit, options: { onPasswordRequired?: () => Promise<string | null>; retrying?: boolean } = {}): Promise<T> {
   const credential = readCredential(sessionStorage);
-  const response = await fetch(path, { headers: { "content-type": "application/json", ...authHeaders(credential), ...(init?.headers || {}) }, ...init });
+  const response = await fetch(path, { ...init, headers: buildRequestHeaders(credential, init?.headers) });
   if (!response.headers.get("content-type")?.includes("application/json")) throw new Error(`API endpoint unavailable (${response.status})`);
   const data = await response.json().catch(() => ({}));
   if (response.status === 401 && options.retrying) forgetCredential(sessionStorage);
