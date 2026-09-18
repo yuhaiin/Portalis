@@ -15,13 +15,19 @@ The name comes from “portal”: a controlled gateway between a listening addre
 
 ## Install
 
-GitHub releases contain static-musl Linux binaries for amd64 and arm64, checksums, the systemd unit, and this installer. As root:
+GitHub releases contain static-musl Linux binaries for amd64 and arm64, checksums, the systemd unit, and this installer. With a sudo-capable account:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/asutorufa/portalis/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/yuhaiin/Portalis/main/install.sh | sudo bash
 ```
 
 Set `PORTALIS_REPO=owner/repository` when installing from another repository. The service runs as root because Netfilter configuration needs `CAP_NET_ADMIN`; its web API remains loopback-only by default.
+
+For a different repository or a pinned release, pass the variables to the root shell:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/yuhaiin/Portalis/main/install.sh | sudo env PORTALIS_REPO=owner/repository PORTALIS_VERSION=version bash
+```
 
 Open the UI through an SSH tunnel:
 
