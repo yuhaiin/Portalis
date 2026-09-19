@@ -11,7 +11,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use portalis_core::{Config, KernelStatus, ValidationResponse};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 #[derive(RustEmbed)]
 #[folder = "../../web/dist/"]
@@ -103,8 +103,10 @@ async fn authenticate(
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|info| info.0.ip());
-    let is_loopback = remote.is_none_or(AuthState::is_loopback);
     let headers = request.headers();
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok());
     let bearer = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -124,10 +126,11 @@ async fn authenticate(
                 .map(|(_, password)| password.to_owned())
         });
     let auth = runtime.auth.read().await;
+    let is_local_auth_exempt = local_auth_exempt(remote, host, auth.has_password());
     let authenticated = bearer.is_some_and(|token| auth.verify_token(token))
         || password.is_some_and(|value| auth.verify_credential(value))
         || basic_password.is_some_and(|value| auth.verify_password(&value));
-    if is_loopback || authenticated {
+    if is_local_auth_exempt || authenticated {
         return next.run(request).await;
     }
     (
@@ -139,9 +142,30 @@ async fn authenticate(
         .into_response()
 }
 
+fn local_auth_exempt(remote: Option<IpAddr>, host: Option<&str>, password_enabled: bool) -> bool {
+    // Missing ConnectInfo is the Unix control-socket path. TCP requests always receive
+    // ConnectInfo from into_make_service_with_connect_info, including requests from a proxy.
+    remote.is_none_or(|address| {
+        !password_enabled && AuthState::is_loopback(address) && host.is_some_and(is_loopback_host)
+    })
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim();
+    let host = if let Some(value) = host.strip_prefix('[') {
+        value.split_once(']').map_or(host, |(value, _)| value)
+    } else if host.matches(':').count() == 1 {
+        host.split_once(':').map_or(host, |(value, _)| value)
+    } else {
+        host
+    };
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
 async fn auth_status(State(runtime): State<Runtime>) -> Response {
     let auth = runtime.auth.read().await;
-    Json(serde_json::json!({ "password_enabled": auth.has_password(), "loopback_passwordless": true, "setup_token_file": auth.secret_path() })).into_response()
+    let password_enabled = auth.has_password();
+    Json(serde_json::json!({ "password_enabled": password_enabled, "loopback_passwordless": !password_enabled, "setup_token_file": auth.secret_path() })).into_response()
 }
 
 async fn set_password(
@@ -600,4 +624,27 @@ fn not_found(error: &str) -> Response {
         }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::local_auth_exempt;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn configured_password_disables_tcp_loopback_auth_bypass() {
+        let loopback = Some(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let remote = Some(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)));
+
+        assert!(local_auth_exempt(None, None, true));
+        assert!(local_auth_exempt(loopback, Some("127.0.0.1:17890"), false));
+        assert!(local_auth_exempt(loopback, Some("[::1]:17890"), false));
+        assert!(!local_auth_exempt(
+            loopback,
+            Some("panel.example.com"),
+            false
+        ));
+        assert!(!local_auth_exempt(loopback, Some("127.0.0.1:17890"), true));
+        assert!(!local_auth_exempt(remote, Some("127.0.0.1:17890"), false));
+    }
 }
