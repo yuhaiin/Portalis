@@ -23,7 +23,9 @@ class MemoryStorage {
   }
 }
 
-const headers = buildRequestHeaders("<REDACTED>", { "x-client-header": "preserved" });
+const headers = buildRequestHeaders("<REDACTED>", {
+  "x-client-header": "preserved",
+});
 assert.equal(headers.get("authorization"), "Bearer <REDACTED>");
 assert.equal(headers.get("x-portalis-password"), "<REDACTED>");
 assert.equal(headers.get("x-client-header"), "preserved");
@@ -43,7 +45,9 @@ let release;
 let promptCalls = 0;
 const recovery = recoverCredential(storage, async () => {
   promptCalls += 1;
-  return new Promise(resolve => { release = resolve; });
+  return new Promise((resolve) => {
+    release = resolve;
+  });
 });
 const waitingCredential = waitForCredential(storage);
 await Promise.resolve();

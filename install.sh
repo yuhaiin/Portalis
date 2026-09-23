@@ -10,9 +10,12 @@ repo="${PORTALIS_REPO:-yuhaiin/Portalis}"
 version="${PORTALIS_VERSION:-latest}"
 arch="$(uname -m)"
 case "$arch" in
-  x86_64) artifact="portalis-linux-amd64" ;;
-  aarch64|arm64) artifact="portalis-linux-arm64" ;;
-  *) echo "unsupported architecture: $arch" >&2; exit 1 ;;
+x86_64) artifact="portalis-linux-amd64" ;;
+aarch64 | arm64) artifact="portalis-linux-arm64" ;;
+*)
+  echo "unsupported architecture: $arch" >&2
+  exit 1
+  ;;
 esac
 
 if [[ "$version" == "latest" ]]; then base="https://github.com/$repo/releases/latest/download"; else base="https://github.com/$repo/releases/download/$version"; fi
