@@ -549,7 +549,7 @@ function App() {
     <div className="shell">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark">P</span>
+          <img className="brand-mark" src="/portalis-icon.svg" alt="" />
           <span>Portalis</span>
           <span className="brand-divider" />{" "}
           <span className="brand-context">Operator Console</span>

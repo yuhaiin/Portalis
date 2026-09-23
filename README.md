@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icons/portalis-icon-celestial-eclipse.svg" alt="Portalis icon" width="112" />
+</p>
+
 # Portalis
 
 Portalis is a Rust-native control plane for safe single-host nftables port forwarding on Linux VPS machines. It provides a bilingual web UI, a local Unix control socket, live kernel counters, revision history, and S3-compatible backups.

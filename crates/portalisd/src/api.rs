@@ -580,6 +580,8 @@ async fn static_asset(uri: axum::http::Uri) -> Response {
                 "text/javascript"
             } else if path.ends_with(".css") {
                 "text/css"
+            } else if path.ends_with(".svg") {
+                "image/svg+xml"
             } else {
                 "text/html; charset=utf-8"
             };
