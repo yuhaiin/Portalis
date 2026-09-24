@@ -354,10 +354,7 @@ main > .card,
 main > .rules-page,
 main > .about-page {
   width: min(100%, 1200px);
-}
-
-main > .about-page {
-  margin: 0 auto;
+  margin-inline: auto;
 }
 
 .page-head {
@@ -664,6 +661,35 @@ h2 {
   font-size: 11px;
   font-weight: 500;
   letter-spacing: 0;
+}
+
+.metric-protocol-values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0 6px;
+}
+
+.metric-protocol-values > div {
+  min-width: 0;
+}
+
+.metric-protocol-values span {
+  display: block;
+  color: #789783;
+  font-size: 9px;
+  font-weight: 720;
+  letter-spacing: 0.09em;
+  line-height: 1.2;
+}
+
+.metric-protocol-values strong {
+  display: block;
+  margin: 3px 0 0;
+  font-size: 17px;
+  letter-spacing: -0.04em;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .metric span,
@@ -1698,6 +1724,10 @@ input[type="checkbox"] {
 
   .metric strong {
     font-size: 25px;
+  }
+
+  .metric-protocol-values strong {
+    font-size: 16px;
   }
 
   .activity-row {

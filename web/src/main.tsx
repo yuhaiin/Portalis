@@ -1076,10 +1076,12 @@ function Overview({
     (sum, value) => sum + value.packets,
     0,
   );
-  const bytes = [...counterMap.values()].reduce(
-    (sum, value) => sum + value.bytes,
-    0,
-  );
+  const bytesByProtocol = (protocol: Protocol) =>
+    (status?.kernel.counters || []).reduce(
+      (sum, counter) =>
+        counter.protocol === protocol ? sum + counter.bytes : sum,
+      0,
+    );
   return (
     <>
       <div className="metric-grid">
@@ -1098,11 +1100,20 @@ function Overview({
           unit={t("packets")}
           note={t("live kernel counter")}
         />
-        <Metric
-          label={t("BYTES")}
-          value={fmtBytes(bytes)}
-          note={t("since last apply")}
-        />
+        <div className="metric metric-bytes card">
+          <div className="eyebrow">{t("BYTES")}</div>
+          <div className="metric-protocol-values">
+            <div>
+              <span>TCP</span>
+              <strong>{fmtBytes(bytesByProtocol("tcp"))}</strong>
+            </div>
+            <div>
+              <span>UDP</span>
+              <strong>{fmtBytes(bytesByProtocol("udp"))}</strong>
+            </div>
+          </div>
+          <span>{t("since last apply")}</span>
+        </div>
         <Metric
           label={t("FORWARDING")}
           value={
