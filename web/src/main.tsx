@@ -3,11 +3,19 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import type { Dispatch, FormEvent, ReactNode, SetStateAction } from "react";
+import type {
+  Dispatch,
+  FormEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  ReactNode,
+  SetStateAction,
+} from "react";
 import {
   IconAlertTriangle,
   IconArrowsExchange,
@@ -16,15 +24,16 @@ import {
   IconCircleCheck,
   IconCloudUpload,
   IconDotsVertical,
+  IconInfoCircle,
   IconLayoutDashboard,
   IconPlus,
   IconRefresh,
   IconSearch,
   IconServer,
   IconSettings,
-  IconShieldCheck,
   IconUserCircle,
 } from "@tabler/icons-react";
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import {
   buildRequestHeaders,
@@ -37,6 +46,8 @@ import "./styles.css";
 
 type Family = "auto" | "ipv4" | "ipv6";
 type Protocol = "tcp" | "udp";
+type Translator = (text: string) => string;
+type SelectOption = { value: string; label: string };
 type Snat = { mode: "none" | "masquerade" | "fixed"; address?: string };
 type Rule = {
   id: string;
@@ -73,6 +84,15 @@ type Status = {
   ipv4_forwarding: boolean;
   ipv6_forwarding: boolean;
   warnings: string[];
+};
+type AboutInfo = {
+  name: string;
+  version: string;
+  hostname: string | null;
+  operating_system: string;
+  kernel_release: string | null;
+  architecture: string;
+  api_version: string;
 };
 type Backup = { key: string; size_bytes: number; last_modified?: string };
 type ApiRequest = <T>(path: string, init?: RequestInit) => Promise<T>;
@@ -382,17 +402,223 @@ async function api<T>(
   return data as T;
 }
 
+type SelectPosition = {
+  left: number;
+  top?: number;
+  bottom?: number;
+  width: number;
+  maxHeight: number;
+};
+
+function SelectControl({
+  value,
+  options,
+  ariaLabel,
+  onValueChange,
+}: {
+  value: string;
+  options: SelectOption[];
+  ariaLabel: string;
+  onValueChange: (value: string) => void;
+}) {
+  const id = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [position, setPosition] = useState<SelectPosition | null>(null);
+  const selectedIndex = Math.max(
+    0,
+    options.findIndex((option) => option.value === value),
+  );
+  const selectedOption = options[selectedIndex];
+  const popupId = `${id}-options`;
+
+  const openSelect = () => {
+    setActiveIndex(selectedIndex);
+    setOpen(true);
+  };
+
+  const chooseOption = (index: number) => {
+    const option = options[index];
+    if (!option) return;
+    onValueChange(option.value);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !rootRef.current?.contains(target) &&
+        !menuRef.current?.contains(target)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    return () =>
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+  }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return undefined;
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const maxMenuHeight = Math.min(280, window.innerHeight - 20);
+      const estimatedHeight = Math.min(options.length * 42 + 12, maxMenuHeight);
+      const spaceBelow = window.innerHeight - rect.bottom - 10;
+      const spaceAbove = rect.top - 10;
+      const opensAbove = spaceBelow < estimatedHeight && spaceAbove > spaceBelow;
+      const availableHeight = opensAbove ? spaceAbove : spaceBelow;
+      const width = Math.min(rect.width, window.innerWidth - 16);
+      setPosition({
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+        top: opensAbove ? undefined : rect.bottom + 6,
+        bottom: opensAbove ? window.innerHeight - rect.top + 6 : undefined,
+        width,
+        maxHeight: Math.max(90, Math.min(maxMenuHeight, availableHeight)),
+      });
+    };
+    const repositionOnScroll = (event: Event) => {
+      if (
+        event.target instanceof Node &&
+        menuRef.current?.contains(event.target)
+      ) {
+        return;
+      }
+      updatePosition();
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", repositionOnScroll, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", repositionOnScroll, true);
+    };
+  }, [open, options.length]);
+
+  useEffect(() => {
+    if (open) {
+      document
+        .getElementById(`${popupId}-option-${activeIndex}`)
+        ?.scrollIntoView({ block: "nearest" });
+    }
+  }, [activeIndex, open, popupId]);
+
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!open) {
+        openSelect();
+        return;
+      }
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      setActiveIndex((index) =>
+        Math.max(0, Math.min(options.length - 1, index + step)),
+      );
+      return;
+    }
+    if (event.key === "Home" && open) {
+      event.preventDefault();
+      setActiveIndex(0);
+      return;
+    }
+    if (event.key === "End" && open) {
+      event.preventDefault();
+      setActiveIndex(options.length - 1);
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (open) chooseOption(activeIndex);
+      else openSelect();
+      return;
+    }
+    if (event.key === "Escape" && open) {
+      event.preventDefault();
+      setOpen(false);
+      return;
+    }
+    if (event.key === "Tab" && open) setOpen(false);
+  };
+
+  return (
+    <div className={`select-control ${open ? "open" : ""}`} ref={rootRef}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="select-trigger"
+        role="combobox"
+        aria-label={ariaLabel}
+        aria-expanded={open}
+        aria-controls={open ? popupId : undefined}
+        aria-haspopup="listbox"
+        aria-activedescendant={
+          open ? `${popupId}-option-${activeIndex}` : undefined
+        }
+        onClick={() => (open ? setOpen(false) : openSelect())}
+        onKeyDown={onKeyDown}
+      >
+        <span>{selectedOption?.label ?? value}</span>
+        <IconChevronDown size={18} stroke={1.8} aria-hidden="true" />
+      </button>
+      {open &&
+        position &&
+        createPortal(
+          <div
+            ref={menuRef}
+            id={popupId}
+            className="select-menu"
+            role="listbox"
+            aria-label={ariaLabel}
+            style={position}
+          >
+            {options.map((option, index) => (
+              <div
+                id={`${popupId}-option-${index}`}
+                key={option.value}
+                className="select-option"
+                role="option"
+                aria-selected={index === selectedIndex}
+                data-active={index === activeIndex}
+                onPointerEnter={() => setActiveIndex(index)}
+                onClick={() => chooseOption(index)}
+              >
+                <span>{option.label}</span>
+                {index === selectedIndex && (
+                  <IconCheck size={16} stroke={2} aria-hidden="true" />
+                )}
+              </div>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
+}
+
 function App() {
-  const [language, setLanguage] = useState<"en" | "zh">(
-    navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en",
+  const [tab, setTab] = useState<
+    "overview" | "rules" | "backups" | "settings" | "about"
+  >("overview");
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [hasSavedCredential, setHasSavedCredential] = useState(() =>
+    Boolean(readCredential(sessionStorage)),
   );
-  const [tab, setTab] = useState<"overview" | "rules" | "backups" | "settings">(
-    "overview",
-  );
+  const accountMenuRef = useRef<HTMLDivElement>(null);
   const [config, setConfig] = useState<Config>(initial);
   const draftDirtyRef = useRef(false);
   const [draftDirty, setDraftDirty] = useState(false);
   const [status, setStatus] = useState<Status | null>(null);
+  const [aboutInfo, setAboutInfo] = useState<AboutInfo | null>(null);
+  const [aboutLoading, setAboutLoading] = useState(false);
   const [backups, setBackups] = useState<{
     local: unknown[];
     remote: Backup[];
@@ -402,26 +628,46 @@ function App() {
   const [message, setMessage] = useState<{ good?: string; bad?: string }>({});
   const [busy, setBusy] = useState(false);
   const dialog = useDialog();
-  const t = useCallback(
-    (en: string, zh: string) => (language === "zh" ? zh : en),
-    [language],
-  );
+  const t = useCallback((text: string) => text, []);
   const passwordPrompt = useRef<Promise<string | null> | null>(null);
+  useEffect(() => {
+    if (!accountMenuOpen) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        target instanceof Node &&
+        !accountMenuRef.current?.contains(target)
+      ) {
+        setAccountMenuOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAccountMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [accountMenuOpen]);
   const requestPassword = useCallback(() => {
     if (!passwordPrompt.current) {
       const pending = dialog
         .prompt(
-          t("Authentication required", "需要认证"),
+          t("Authentication required"),
           t(
-            "Enter the Portalis password or setup token to continue.",
-            "请输入 Portalis 密码或 setup token 以继续。",
-          ),
+            "Enter the Portalis password or setup token to continue."),
           {
-            submitLabel: t("Continue", "继续"),
-            cancelLabel: t("Cancel", "取消"),
-            placeholder: t("Password or setup token", "密码或 setup token"),
+            submitLabel: t("Continue"),
+            cancelLabel: t("Cancel"),
+            placeholder: t("Password or setup token"),
           },
         )
+        .then((credential) => {
+          if (credential) setHasSavedCredential(true);
+          return credential;
+        })
         .finally(() => {
           passwordPrompt.current = null;
         });
@@ -482,9 +728,7 @@ function App() {
       setDraftDirty(false);
       setMessage({
         good: t(
-          "Draft saved. Review it, then apply.",
-          "草稿已保存。确认无误后再应用。",
-        ),
+          "Draft saved. Review it, then apply."),
       });
     } catch (error) {
       setMessage({ bad: String(error) });
@@ -496,13 +740,11 @@ function App() {
     if (
       !(await dialog.confirm(
         t(
-          "Apply this draft to nftables? SSH is protected by validation.",
-          "将草稿应用到 nftables？验证会保护 SSH 连接。",
-        ),
+          "Apply this draft to nftables? SSH is protected by validation."),
         {
-          title: t("Apply changes", "应用变更"),
-          confirmLabel: t("Apply", "应用"),
-          cancelLabel: t("Cancel", "取消"),
+          title: t("Apply changes"),
+          confirmLabel: t("Apply"),
+          cancelLabel: t("Cancel"),
           tone: "danger",
         },
       ))
@@ -513,7 +755,7 @@ function App() {
     try {
       await request("/api/v1/apply", { method: "POST" });
       await refresh();
-      setMessage({ good: t("Applied successfully.", "已应用成功。") });
+      setMessage({ good: t("Applied successfully.") });
     } catch (error) {
       setMessage({ bad: String(error) });
     } finally {
@@ -530,6 +772,19 @@ function App() {
   useEffect(() => {
     if (tab === "backups") void loadBackups();
   }, [tab]);
+  const loadAbout = useCallback(async () => {
+    setAboutLoading(true);
+    try {
+      setAboutInfo(await request<AboutInfo>("/api/v1/about"));
+    } catch (error) {
+      setMessage({ bad: String(error) });
+    } finally {
+      setAboutLoading(false);
+    }
+  }, [request]);
+  useEffect(() => {
+    if (tab === "about") void loadAbout();
+  }, [tab, loadAbout]);
   const updateRule = (id: string, patch: Partial<Rule>) =>
     updateConfig((value) => ({
       ...value,
@@ -551,8 +806,6 @@ function App() {
         <div className="brand">
           <img className="brand-mark" src="/portalis-icon.svg" alt="" />
           <span>Portalis</span>
-          <span className="brand-divider" />{" "}
-          <span className="brand-context">Operator Console</span>
         </div>
         <div className="top-actions">
           <span
@@ -560,23 +813,60 @@ function App() {
           >
             <IconCircleCheck size={15} stroke={2} />
             {status?.kernel.table_present
-              ? t("Connected", "已连接")
-              : t("Table offline", "规则表离线")}
+              ? t("Connected")
+              : t("Table offline")}
           </span>
           <button className="top-button" onClick={() => void refresh()}>
             <IconRefresh size={16} stroke={1.8} />
-            {t("Reload data", "重新加载")}
+            {t("Reload data")}
           </button>
-          <button className="user-chip">
-            <IconUserCircle size={17} stroke={1.8} />
-            admin <IconChevronDown size={15} stroke={1.8} />
-          </button>
-          <button
-            className="language"
-            onClick={() => setLanguage(language === "en" ? "zh" : "en")}
-          >
-            {language === "en" ? "中文" : "English"}
-          </button>
+          <div className="account-menu" ref={accountMenuRef}>
+            <button
+              className="user-chip"
+              aria-expanded={accountMenuOpen}
+              aria-controls={accountMenuOpen ? "account-actions" : undefined}
+              onClick={() => setAccountMenuOpen((open) => !open)}
+            >
+              <IconUserCircle size={17} stroke={1.8} aria-hidden="true" />
+              <span>{t("Web access")}</span>
+              <IconChevronDown size={15} stroke={1.8} aria-hidden="true" />
+            </button>
+            {accountMenuOpen && (
+              <div
+                className="account-menu-panel"
+                id="account-actions"
+                role="group"
+                aria-label={t("Account actions")}
+              >
+                <div className="account-menu-heading">
+                  <strong>{t("Web access")}</strong>
+                  <small>{t("Credentials are stored for this tab.")}</small>
+                </div>
+                <button
+                  className="account-menu-item"
+                  onClick={() => {
+                    setTab("settings");
+                    setAccountMenuOpen(false);
+                  }}
+                >
+                  {t("Authentication settings")}
+                </button>
+                {hasSavedCredential && (
+                  <button
+                    className="account-menu-item"
+                    onClick={() => {
+                      forgetCredential(sessionStorage);
+                      setHasSavedCredential(false);
+                      setAccountMenuOpen(false);
+                      window.location.reload();
+                    }}
+                  >
+                    {t("Forget saved credential")}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </header>
       <div className="layout">
@@ -587,72 +877,78 @@ function App() {
               onClick={() => setTab("overview")}
             >
               <IconLayoutDashboard size={18} stroke={1.8} />
-              {t("Overview", "概览")}
+              {t("Overview")}
             </button>
-            <div className="nav-section">{t("NETWORK", "网络")}</div>
             <button
               className={`nav-item ${tab === "rules" ? "active" : ""}`}
               onClick={() => setTab("rules")}
             >
               <IconArrowsExchange size={18} stroke={1.8} />
-              {t("Forwarding rules", "转发规则")}
+              {t("Forwarding rules")}
             </button>
             <button
               className={`nav-item ${tab === "backups" ? "active" : ""}`}
               onClick={() => setTab("backups")}
             >
               <IconCloudUpload size={18} stroke={1.8} />
-              {t("Backups", "备份")}
-            </button>
-            <div className="nav-section">{t("SYSTEM", "系统")}</div>
-            <button className="nav-item" onClick={() => setTab("overview")}>
-              <IconShieldCheck size={18} stroke={1.8} />
-              {t("Nftables status", "Nftables 状态")}
+              {t("Backups")}
             </button>
             <button
               className={`nav-item ${tab === "settings" ? "active" : ""}`}
               onClick={() => setTab("settings")}
             >
               <IconSettings size={18} stroke={1.8} />
-              {t("Settings", "设置")}
+              {t("Settings")}
+            </button>
+            <button
+              className={`nav-item ${tab === "about" ? "active" : ""}`}
+              onClick={() => setTab("about")}
+            >
+              <IconInfoCircle size={18} stroke={1.8} />
+              {t("About")}
             </button>
           </nav>
-          <div className="host-info">
-            <div>{t("Host", "主机")}</div>
-            <strong>
-              <IconServer size={16} stroke={1.8} />
-              edge-01
-            </strong>
-            <div>{t("Kernel", "内核")}</div>
-            <strong>6.6.18</strong>
-          </div>
         </aside>
         <main>
           <div className="page-head">
             <div>
               <div className="eyebrow">
                 {tab === "overview"
-                  ? t("LIVE OVERVIEW", "实时概览")
+                  ? t("LIVE OVERVIEW")
                   : tab === "rules"
-                    ? t("NETWORK / FORWARDING", "网络 / 转发")
+                    ? t("NETWORK / FORWARDING")
                     : tab === "backups"
-                      ? t("SYSTEM / BACKUPS", "系统 / 备份")
-                      : t("SYSTEM / SETTINGS", "系统 / 设置")}
+                      ? t("SYSTEM / BACKUPS")
+                      : tab === "settings"
+                        ? t("SYSTEM / SETTINGS")
+                        : t("SYSTEM / ABOUT")}
               </div>
               <h1>
                 {tab === "overview"
-                  ? t("Traffic, at a glance.", "流量，一目了然。")
+                  ? t("Traffic, at a glance.")
                   : tab === "rules"
-                    ? t("Forwarding rules", "转发规则")
+                    ? t("Forwarding rules")
                     : tab === "backups"
-                      ? t("Safe restore points", "安全备份点")
-                      : t("Gateway settings", "网关设置")}
+                      ? t("Safe restore points")
+                      : tab === "settings"
+                        ? t("Gateway settings")
+                        : t("About Portalis")}
               </h1>
             </div>
             {tab === "rules" && (
               <button className="primary" onClick={addRule}>
                 <IconPlus size={17} stroke={2} />
-                {t("New rule", "新建规则")}
+                {t("New rule")}
+              </button>
+            )}
+            {tab === "about" && (
+              <button
+                className="secondary"
+                onClick={() => void loadAbout()}
+                disabled={aboutLoading}
+              >
+                <IconRefresh size={16} stroke={1.8} />
+                {t("Refresh information")}
               </button>
             )}
           </div>
@@ -694,8 +990,71 @@ function App() {
           {tab === "settings" && (
             <Settings t={t} request={request} setMessage={setMessage} />
           )}
+          {tab === "about" && (
+            <AboutPage info={aboutInfo} loading={aboutLoading} t={t} />
+          )}
         </main>
       </div>
+    </div>
+  );
+}
+
+function AboutPage({
+  info,
+  loading,
+  t,
+}: {
+  info: AboutInfo | null;
+  loading: boolean;
+  t: Translator;
+}) {
+  const placeholder = loading ? t("Loading…") : "—";
+  const fields = [
+    { label: t("Hostname"), value: info?.hostname },
+    { label: t("Operating system"), value: info?.operating_system },
+    { label: t("Kernel version"), value: info?.kernel_release },
+    { label: t("Architecture"), value: info?.architecture },
+  ];
+
+  return (
+    <div className="about-page">
+      <section className="card about-summary">
+        <div className="about-summary-main">
+          <img className="about-mark" src="/portalis-icon.svg" alt="" />
+          <div>
+            <div className="eyebrow">{t("PORTALIS SERVICE")}</div>
+            <h2>{info?.name ?? "Portalis"}</h2>
+            <p>{t("Network forwarding managed with nftables.")}</p>
+          </div>
+        </div>
+        <div className="about-meta">
+          <span>
+            <small>{t("Version")}</small>
+            {info ? `v${info.version}` : placeholder}
+          </span>
+          <span>
+            <small>{t("API")}</small>
+            {info?.api_version ?? placeholder}
+          </span>
+        </div>
+      </section>
+      <section className="card about-system">
+        <div className="about-system-head">
+          <IconServer size={19} stroke={1.8} aria-hidden="true" />
+          <div>
+            <div className="eyebrow">{t("HOST")}</div>
+            <h2>{t("System information")}</h2>
+          </div>
+        </div>
+        <dl className="about-fields">
+          {fields.map(({ label, value }) => (
+            <div className="about-field" key={label}>
+              <dt>{label}</dt>
+              <dd>{value || placeholder}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
     </div>
   );
 }
@@ -710,7 +1069,7 @@ function Overview({
   status: Status | null;
   config: Config;
   counterMap: Map<string, { packets: number; bytes: number }>;
-  t: (en: string, zh: string) => string;
+  t: Translator;
   onRules: () => void;
 }) {
   const packets = [...counterMap.values()].reduce(
@@ -725,27 +1084,27 @@ function Overview({
     <>
       <div className="metric-grid">
         <Metric
-          label={t("ACTIVE RULES", "生效规则")}
+          label={t("ACTIVE RULES")}
           value={String(config.rules.filter((rule) => rule.enabled).length)}
           note={
             status?.active_revision
               ? `${status.active_revision.slice(0, 8)}…`
-              : t("Not applied", "尚未应用")
+              : t("Not applied")
           }
         />
         <Metric
-          label={t("PACKETS", "数据包")}
+          label={t("PACKETS")}
           value={fmtPackets(packets)}
-          unit={t("packets", "包")}
-          note={t("live kernel counter", "内核实时计数")}
+          unit={t("packets")}
+          note={t("live kernel counter")}
         />
         <Metric
-          label={t("BYTES", "字节数")}
+          label={t("BYTES")}
           value={fmtBytes(bytes)}
-          note={t("since last apply", "自上次应用")}
+          note={t("since last apply")}
         />
         <Metric
-          label={t("FORWARDING", "转发开关")}
+          label={t("FORWARDING")}
           value={
             status?.ipv4_forwarding && status?.ipv6_forwarding
               ? "4 + 6"
@@ -755,7 +1114,7 @@ function Overview({
                   ? "IPv6"
                   : "off"
           }
-          note={t("kernel sysctl", "内核 sysctl")}
+          note={t("kernel sysctl")}
         />
       </div>
       {status?.warnings.map((warning, index) => (
@@ -767,11 +1126,11 @@ function Overview({
       <section className="card">
         <div className="card-head">
           <div>
-            <div className="eyebrow">{t("MANAGED TABLE", "受管表")}</div>
+            <div className="eyebrow">{t("MANAGED TABLE")}</div>
             <h2>inet portalis</h2>
           </div>
           <button className="quiet" onClick={onRules}>
-            {t("Manage rules →", "管理规则 →")}
+            {t("Manage rules →")}
           </button>
         </div>
         <div className="table-state">
@@ -779,16 +1138,16 @@ function Overview({
             className={`state-pill ${status?.kernel.table_present ? "online" : "offline"}`}
           >
             {status?.kernel.table_present
-              ? t("ONLINE", "在线")
-              : t("NOT APPLIED", "未应用")}
+              ? t("ONLINE")
+              : t("NOT APPLIED")}
           </span>
           <span>
             {status?.kernel.drifted
-              ? t("Kernel drift detected", "检测到内核漂移")
-              : t("Matches active revision", "与生效版本一致")}
+              ? t("Kernel drift detected")
+              : t("Matches active revision")}
           </span>
           <span className="muted">
-            {t("Observed", "观测时间")} {status?.kernel.observed_at || "—"}
+            {t("Observed")} {status?.kernel.observed_at || "—"}
           </span>
         </div>
       </section>
@@ -796,15 +1155,13 @@ function Overview({
         <div className="card-head">
           <div>
             <div className="eyebrow">
-              {t("RECENT RULE ACTIVITY", "最近规则活动")}
+              {t("RECENT RULE ACTIVITY")}
             </div>
-            <h2>{t("Live counters", "实时计数")}</h2>
+            <h2>{t("Live counters")}</h2>
           </div>
           <span className="muted">
             {t(
-              "TCP and UDP are separate kernel rules",
-              "TCP 与 UDP 是独立内核规则",
-            )}
+              "TCP and UDP are separate kernel rules")}
           </span>
         </div>
         {config.rules.length === 0 ? (
@@ -822,7 +1179,7 @@ function Overview({
               const udp = status?.kernel.counters.find(
                 (item) => item.rule_id === rule.id && item.protocol === "udp",
               );
-              const packetUnit = t("packets", "包");
+              const packetUnit = t("packets");
               return (
                 <div className="activity-row" key={rule.id}>
                   <span
@@ -887,13 +1244,11 @@ function Metric({
     </div>
   );
 }
-function Empty({ t }: { t: (en: string, zh: string) => string }) {
+function Empty({ t }: { t: Translator }) {
   return (
     <div className="empty">
       {t(
-        "No rules yet. Add a forwarding rule to get started.",
-        "还没有规则。新增一条转发规则开始使用。",
-      )}
+        "No rules yet. Add a forwarding rule to get started.")}
     </div>
   );
 }
@@ -916,7 +1271,7 @@ function RulesTable({
   setSelected: (value: string | null) => void;
   updateRule: (id: string, patch: Partial<Rule>) => void;
   setConfig: Dispatch<SetStateAction<Config>>;
-  t: (en: string, zh: string) => string;
+  t: Translator;
   onSave: () => void;
   onApply: () => void;
   busy: boolean;
@@ -944,12 +1299,10 @@ function RulesTable({
       <section className="rule-table card">
         <div className="table-heading">
           <div>
-            <h2>{t("Rule inventory", "规则清单")}</h2>
+            <h2>{t("Rule inventory")}</h2>
             <p>
               {t(
-                "Manage the forwarding rules owned by this host.",
-                "管理此主机上的转发规则。",
-              )}
+                "Manage the forwarding rules owned by this host.")}
             </p>
           </div>
           <span className="table-count">
@@ -962,40 +1315,40 @@ function RulesTable({
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder={t("Search rules", "搜索规则")}
+              placeholder={t("Search rules")}
             />
           </label>
           <div className="table-filters">
-            <select
-              aria-label={t("Filter by address family", "按地址族筛选")}
+            <SelectControl
+              ariaLabel={t("Filter by address family")}
               value={family}
-              onChange={(event) =>
-                setFamily(event.target.value as Family | "all")
-              }
-            >
-              <option value="all">{t("All families", "全部地址族")}</option>
-              <option value="auto">Auto</option>
-              <option value="ipv4">IPv4</option>
-              <option value="ipv6">IPv6</option>
-            </select>
-            <select
-              aria-label={t("Filter by status", "按状态筛选")}
+              onValueChange={(value) => setFamily(value as Family | "all")}
+              options={[
+                { value: "all", label: t("All families") },
+                { value: "auto", label: "Auto" },
+                { value: "ipv4", label: "IPv4" },
+                { value: "ipv6", label: "IPv6" },
+              ]}
+            />
+            <SelectControl
+              ariaLabel={t("Filter by status")}
               value={state}
-              onChange={(event) =>
-                setState(event.target.value as "all" | "enabled" | "disabled")
+              onValueChange={(value) =>
+                setState(value as "all" | "enabled" | "disabled")
               }
-            >
-              <option value="all">{t("All states", "全部状态")}</option>
-              <option value="enabled">{t("Enabled", "已启用")}</option>
-              <option value="disabled">{t("Disabled", "已停用")}</option>
-            </select>
+              options={[
+                { value: "all", label: t("All states") },
+                { value: "enabled", label: t("Enabled") },
+                { value: "disabled", label: t("Disabled") },
+              ]}
+            />
           </div>
         </div>
         {config.rules.length === 0 ? (
           <Empty t={t} />
         ) : visibleRules.length === 0 ? (
           <div className="empty">
-            {t("No rules match this filter.", "没有符合筛选条件的规则。")}
+            {t("No rules match this filter.")}
           </div>
         ) : (
           <div className="table-scroll">
@@ -1003,14 +1356,14 @@ function RulesTable({
               <thead>
                 <tr>
                   <th>#</th>
-                  <th>{t("State", "状态")}</th>
-                  <th>{t("Listen port", "监听端口")}</th>
-                  <th>{t("Protocol", "协议")}</th>
-                  <th>{t("Family", "地址族")}</th>
-                  <th>{t("Target IP", "目标 IP")}</th>
-                  <th>{t("Target port", "目标端口")}</th>
-                  <th>{t("Interface", "接口")}</th>
-                  <th>{t("Comment", "备注")}</th>
+                  <th>{t("State")}</th>
+                  <th>{t("Listen port")}</th>
+                  <th>{t("Protocol")}</th>
+                  <th>{t("Family")}</th>
+                  <th>{t("Target IP")}</th>
+                  <th>{t("Target port")}</th>
+                  <th>{t("Interface")}</th>
+                  <th>{t("Comment")}</th>
                   <th aria-label="Actions" />
                 </tr>
               </thead>
@@ -1039,8 +1392,8 @@ function RulesTable({
                           className={`status-tag ${rule.enabled ? "active" : "inactive"}`}
                         >
                           {rule.enabled
-                            ? t("Enabled", "已启用")
-                            : t("Disabled", "已停用")}
+                            ? t("Enabled")
+                            : t("Disabled")}
                         </span>
                       </td>
                       <td className="mono">{fmtPortRange(rule.listen_port)}</td>
@@ -1060,7 +1413,7 @@ function RulesTable({
                       <td className="comment-cell">
                         {rule.comment || "—"}
                         <small>
-                          {fmtPackets(counter.packets)} {t("packets", "包")}
+                          {fmtPackets(counter.packets)} {t("packets")}
                         </small>
                       </td>
                       <td className="row-action">
@@ -1074,17 +1427,13 @@ function RulesTable({
           </div>
         )}
       </section>
-      {current ? (
+      {current && (
         <RuleEditor
           rule={current}
           updateRule={updateRule}
           setConfig={setConfig}
           t={t}
         />
-      ) : (
-        <section className="card editor empty">
-          {t("Select a rule to edit.", "选择一条规则进行编辑。")}
-        </section>
       )}
       <div className={`action-bar ${dirty ? "dirty" : ""}`}>
         <div className="action-summary">
@@ -1098,26 +1447,24 @@ function RulesTable({
           <div>
             <strong>
               {dirty
-                ? t("Unsaved draft changes.", "有未保存的草稿变更。")
-                : t("Draft is saved.", "草稿已保存。")}
+                ? t("Unsaved draft changes.")
+                : t("Draft is saved.")}
             </strong>
             <span>
               {t(
-                "Save stores your edits. Apply changes updates nftables.",
-                "保存只存储编辑内容，应用会更新 nftables。",
-              )}
+                "Save stores your edits. Apply changes updates nftables.")}
             </span>
           </div>
         </div>
         <div className="action-meta">
-          {config.rules.length} {t("rules", "条规则")}
+          {config.rules.length} {t("rules")}
         </div>
         <div className="action-buttons">
           <button className="secondary" disabled={busy} onClick={onSave}>
-            {t("Save draft", "保存草稿")}
+            {t("Save draft")}
           </button>
           <button className="primary" disabled={busy} onClick={onApply}>
-            {busy ? t("Working…", "处理中…") : t("Apply changes", "应用变更")}
+            {busy ? t("Working…") : t("Apply changes")}
           </button>
         </div>
       </div>
@@ -1142,7 +1489,7 @@ function Rules({
   setSelected: (value: string | null) => void;
   updateRule: (id: string, patch: Partial<Rule>) => void;
   setConfig: Dispatch<SetStateAction<Config>>;
-  t: (en: string, zh: string) => string;
+  t: Translator;
   onSave: () => void;
   onApply: () => void;
   busy: boolean;
@@ -1154,7 +1501,7 @@ function Rules({
     <div className="rules-layout">
       <section className="card rule-list">
         <div className="card-head">
-          <h2>{t("Draft rules", "草稿规则")}</h2>
+          <h2>{t("Draft rules")}</h2>
           <span className="muted">{config.rules.length}</span>
         </div>
         {config.rules.length === 0 ? (
@@ -1183,38 +1530,32 @@ function Rules({
                   </small>
                 </span>
                 <em>
-                  {fmtPackets(counter.packets)} {t("packets", "包")}
+                  {fmtPackets(counter.packets)} {t("packets")}
                 </em>
               </button>
             );
           })
         )}
       </section>
-      {current ? (
+      {current && (
         <RuleEditor
           rule={current}
           updateRule={updateRule}
           setConfig={setConfig}
           t={t}
         />
-      ) : (
-        <section className="card editor empty">
-          {t("Select a rule to edit.", "选择一条规则进行编辑。")}
-        </section>
       )}
       <div className="action-bar">
         <span className="muted">
           {t(
-            "Save is draft-only. Apply changes the kernel atomically.",
-            "保存只写入草稿。应用会原子更新内核规则。",
-          )}
+            "Save is draft-only. Apply changes the kernel atomically.")}
         </span>
         <div>
           <button className="secondary" disabled={busy} onClick={onSave}>
-            {t("Save draft", "保存草稿")}
+            {t("Save draft")}
           </button>
           <button className="primary" disabled={busy} onClick={onApply}>
-            {busy ? t("Working…", "处理中…") : t("Apply changes", "应用变更")}
+            {busy ? t("Working…") : t("Apply changes")}
           </button>
         </div>
       </div>
@@ -1231,7 +1572,7 @@ function RuleEditor({
   rule: Rule;
   updateRule: (id: string, patch: Partial<Rule>) => void;
   setConfig: Dispatch<SetStateAction<Config>>;
-  t: (en: string, zh: string) => string;
+  t: Translator;
 }) {
   const dialog = useDialog();
   const patch = (value: Partial<Rule>) => updateRule(rule.id, value);
@@ -1246,11 +1587,11 @@ function RuleEditor({
   const remove = async () => {
     if (
       !(await dialog.confirm(
-        t("Delete this draft rule?", "删除这条草稿规则？"),
+        t("Delete this draft rule?"),
         {
-          title: t("Delete rule", "删除规则"),
-          confirmLabel: t("Delete", "删除"),
-          cancelLabel: t("Cancel", "取消"),
+          title: t("Delete rule"),
+          confirmLabel: t("Delete"),
+          cancelLabel: t("Cancel"),
           tone: "danger",
         },
       ))
@@ -1265,7 +1606,7 @@ function RuleEditor({
     <section className="card editor">
       <div className="editor-head">
         <div>
-          <div className="eyebrow">{t("RULE CONFIGURATION", "规则配置")}</div>
+          <div className="eyebrow">{t("RULE CONFIGURATION")}</div>
           <h2>{rule.name}</h2>
         </div>
         <label className="switch">
@@ -1275,34 +1616,32 @@ function RuleEditor({
             onChange={(event) => patch({ enabled: event.target.checked })}
           />
           <span />
-          {t("Enabled", "启用")}
+          {t("Enabled")}
         </label>
       </div>
       <div className="form-grid">
         <label className="wide">
-          {t("Rule name", "规则名称")}
+          {t("Rule name")}
           <input
             value={rule.name}
             onChange={(event) => patch({ name: event.target.value })}
           />
         </label>
         <label>
-          {t("Address family", "地址族")}
-          <select
+          {t("Address family")}
+          <SelectControl
+            ariaLabel={t("Address family")}
             value={rule.family}
-            onChange={(event) =>
-              patch({ family: event.target.value as Family })
-            }
-          >
-            <option value="auto">
-              {t("Auto (from target IP)", "自动（根据目标 IP）")}
-            </option>
-            <option value="ipv4">IPv4</option>
-            <option value="ipv6">IPv6</option>
-          </select>
+            onValueChange={(value) => patch({ family: value as Family })}
+            options={[
+              { value: "auto", label: t("Auto (from target IP)") },
+              { value: "ipv4", label: "IPv4" },
+              { value: "ipv6", label: "IPv6" },
+            ]}
+          />
         </label>
         <label>
-          {t("Protocols", "协议")}
+          {t("Protocols")}
           <span className="checks">
             <label>
               <input
@@ -1331,7 +1670,7 @@ function RuleEditor({
           </span>
         </label>
         <label>
-          {t("Listen port", "监听端口")}
+          {t("Listen port")}
           <span className="range">
             <input
               type="number"
@@ -1355,7 +1694,7 @@ function RuleEditor({
           </span>
         </label>
         <label>
-          {t("Target port", "目标端口")}
+          {t("Target port")}
           <span className="range">
             <input
               type="number"
@@ -1377,10 +1716,10 @@ function RuleEditor({
               }
             />
           </span>
-          <small>{t("Ranges map one-to-one", "范围按一一对应映射")}</small>
+          <small>{t("Ranges map one-to-one")}</small>
         </label>
         <label className="wide">
-          {t("Target IP", "目标 IP")}
+          {t("Target IP")}
           <input
             value={rule.target_ip}
             placeholder={rule.family === "ipv6" ? "2001:db8::10" : "192.0.2.10"}
@@ -1388,25 +1727,27 @@ function RuleEditor({
           />
         </label>
         <label>
-          {t("Listen address", "监听地址")}
-          <select
+          {t("Listen address")}
+          <SelectControl
+            ariaLabel={t("Listen address")}
             value={rule.listen_address === "any" ? "any" : "address"}
-            onChange={(event) =>
+            onValueChange={(value) =>
               patch({
                 listen_address:
-                  event.target.value === "any"
+                  value === "any"
                     ? "any"
                     : { address: rule.family === "ipv6" ? "::" : "0.0.0.0" },
               })
             }
-          >
-            <option value="any">{t("Any address", "全部地址")}</option>
-            <option value="address">{t("Specific IP", "指定 IP")}</option>
-          </select>
+            options={[
+              { value: "any", label: t("Any address") },
+              { value: "address", label: t("Specific IP") },
+            ]}
+          />
         </label>
         {rule.listen_address !== "any" && (
           <label>
-            {t("Listen IP", "监听 IP")}
+            {t("Listen IP")}
             <input
               value={rule.listen_address.address}
               onChange={(event) =>
@@ -1416,28 +1757,28 @@ function RuleEditor({
           </label>
         )}
         <label>
-          {t("SNAT mode", "SNAT 模式")}
-          <select
+          {t("SNAT mode")}
+          <SelectControl
+            ariaLabel={t("SNAT mode")}
             value={rule.snat.mode}
-            onChange={(event) =>
+            onValueChange={(value) =>
               patch({
                 snat:
-                  event.target.value === "fixed"
+                  value === "fixed"
                     ? { mode: "fixed", address: rule.target_ip }
-                    : { mode: event.target.value as "none" | "masquerade" },
+                    : { mode: value as "none" | "masquerade" },
               })
             }
-          >
-            <option value="masquerade">
-              {t("Masquerade (recommended)", "伪装（推荐）")}
-            </option>
-            <option value="none">{t("None", "不使用")}</option>
-            <option value="fixed">{t("Fixed source IP", "固定源 IP")}</option>
-          </select>
+            options={[
+              { value: "masquerade", label: t("Masquerade (recommended)") },
+              { value: "none", label: t("None") },
+              { value: "fixed", label: t("Fixed source IP") },
+            ]}
+          />
         </label>
         {rule.snat.mode === "fixed" && (
           <label>
-            {t("SNAT source IP", "SNAT 源 IP")}
+            {t("SNAT source IP")}
             <input
               value={rule.snat.address}
               onChange={(event) =>
@@ -1448,9 +1789,7 @@ function RuleEditor({
         )}
         <label className="wide">
           {t(
-            "Source CIDRs (optional, one per line)",
-            "来源 CIDR（可选，每行一个）",
-          )}
+            "Source CIDRs (optional, one per line)")}
           <textarea
             value={rule.source_cidrs.join("\n")}
             onChange={(event) =>
@@ -1461,11 +1800,11 @@ function RuleEditor({
                   .filter(Boolean),
               })
             }
-            placeholder={t("Leave empty for all sources", "留空表示所有来源")}
+            placeholder={t("Leave empty for all sources")}
           />
         </label>
         <label className="wide">
-          {t("Comment", "备注")}
+          {t("Comment")}
           <input
             value={rule.comment}
             onChange={(event) => patch({ comment: event.target.value })}
@@ -1480,13 +1819,11 @@ function RuleEditor({
             }
           />
           {t(
-            "Advanced: allow overlapping detected SSH port",
-            "高级：允许覆盖检测到的 SSH 端口",
-          )}
+            "Advanced: allow overlapping detected SSH port")}
         </label>
       </div>
       <button className="danger-link" onClick={() => void remove()}>
-        {t("Delete this draft rule", "删除这条草稿规则")}
+        {t("Delete this draft rule")}
       </button>
     </section>
   );
@@ -1500,7 +1837,7 @@ function BackupPanel({
   setMessage,
 }: {
   backups: { local: unknown[]; remote: Backup[]; warning?: string };
-  t: (en: string, zh: string) => string;
+  t: Translator;
   request: ApiRequest;
   onReload: () => Promise<void>;
   setMessage: (value: { good?: string; bad?: string }) => void;
@@ -1552,7 +1889,7 @@ function BackupPanel({
           secrets,
         }),
       });
-      setMessage({ good: t("S3 settings saved.", "S3 设置已保存。") });
+      setMessage({ good: t("S3 settings saved.") });
     } catch (error) {
       setMessage({ bad: String(error) });
     } finally {
@@ -1565,7 +1902,7 @@ function BackupPanel({
       await request("/api/v1/backups", { method: "POST" });
       await onReload();
       setMessage({
-        good: t("Active revision backed up.", "当前生效版本已备份。"),
+        good: t("Active revision backed up."),
       });
     } catch (error) {
       setMessage({ bad: String(error) });
@@ -1577,13 +1914,11 @@ function BackupPanel({
     if (
       !(await dialog.confirm(
         t(
-          "Import this backup as a draft? It will not apply until you confirm.",
-          "将此备份导入为草稿？确认应用前不会改变系统。",
-        ),
+          "Import this backup as a draft? It will not apply until you confirm."),
         {
-          title: t("Import backup", "导入备份"),
-          confirmLabel: t("Import", "导入"),
-          cancelLabel: t("Cancel", "取消"),
+          title: t("Import backup"),
+          confirmLabel: t("Import"),
+          cancelLabel: t("Cancel"),
         },
       ))
     )
@@ -1594,7 +1929,7 @@ function BackupPanel({
         body: JSON.stringify({ key }),
       });
       setMessage({
-        good: t("Backup imported as a draft.", "备份已导入为草稿。"),
+        good: t("Backup imported as a draft."),
       });
     } catch (error) {
       setMessage({ bad: String(error) });
@@ -1606,19 +1941,17 @@ function BackupPanel({
         <div className="card-head">
           <div>
             <div className="eyebrow">
-              {t("S3-COMPATIBLE STORAGE", "S3 兼容存储")}
+              {t("S3-COMPATIBLE STORAGE")}
             </div>
-            <h2>{t("Remote backups", "远程备份")}</h2>
+            <h2>{t("Remote backups")}</h2>
           </div>
           <button className="primary" disabled={busy} onClick={backup}>
-            {t("Backup active now", "立即备份当前版本")}
+            {t("Backup active now")}
           </button>
         </div>
         <p className="muted">
           {t(
-            "AWS S3, MinIO, Cloudflare R2 and custom endpoints are supported. Scheduled backups run daily at 03:00 and retain the latest 10 revisions.",
-            "支持 AWS S3、MinIO、Cloudflare R2 和自定义端点。每日 03:00 自动备份，仅保留最近 10 个版本。",
-          )}
+            "AWS S3, MinIO, Cloudflare R2 and custom endpoints are supported. Scheduled backups run daily at 03:00 and retain the latest 10 revisions.")}
         </p>
         {backups.warning && (
           <div className="warning">
@@ -1642,7 +1975,7 @@ function BackupPanel({
                   className="quiet"
                   onClick={() => void restore(item.key)}
                 >
-                  {t("Import draft", "导入草稿")}
+                  {t("Import draft")}
                 </button>
               </div>
             ))
@@ -1650,104 +1983,108 @@ function BackupPanel({
         </div>
       </section>
       <section className="card">
-        <div className="eyebrow">{t("STORAGE CONNECTION", "存储连接")}</div>
-        <h2>{t("Configure S3", "配置 S3")}</h2>
-        <form className="form-grid" onSubmit={save}>
-          <label>
-            {t("Provider", "提供商")}
-            <select
-              value={profile.provider}
-              onChange={(event) =>
-                setProfile({ ...profile, provider: event.target.value })
-              }
-            >
-              <option value="aws">AWS S3</option>
-              <option value="minio">MinIO</option>
-              <option value="r2">Cloudflare R2</option>
-              <option value="custom">Custom</option>
-            </select>
-          </label>
-          <label>
-            {t("Region", "区域")}
-            <input
-              value={profile.region}
-              onChange={(event) =>
-                setProfile({ ...profile, region: event.target.value })
-              }
-            />
-          </label>
-          <label className="wide">
-            Endpoint{" "}
-            <small>
-              {profile.provider === "aws"
-                ? t("Optional for AWS default endpoint", "AWS 默认端点可留空")
-                : t("Required for this provider", "此提供商必填")}
-            </small>
-            <input
-              required={profile.provider !== "aws"}
-              value={profile.endpoint}
-              placeholder="https://s3.example.com"
-              onChange={(event) =>
-                setProfile({ ...profile, endpoint: event.target.value })
-              }
-            />
-          </label>
-          <label>
-            Bucket
-            <input
-              required
-              value={profile.bucket}
-              onChange={(event) =>
-                setProfile({ ...profile, bucket: event.target.value })
-              }
-            />
-          </label>
-          <label>
-            Prefix
-            <input
-              value={profile.prefix}
-              onChange={(event) =>
-                setProfile({ ...profile, prefix: event.target.value })
-              }
-            />
-          </label>
-          <label>
-            Access key
-            <input
-              value={profile.access_key_id}
-              autoComplete="off"
-              onChange={(event) =>
-                setProfile({ ...profile, access_key_id: event.target.value })
-              }
-            />
-          </label>
-          <label>
-            Secret key
-            <input
-              type="password"
-              value={profile.secret_access_key}
-              autoComplete="new-password"
-              onChange={(event) =>
-                setProfile({
-                  ...profile,
-                  secret_access_key: event.target.value,
-                })
-              }
-            />
-          </label>
-          <label className="checkline">
-            <input
-              type="checkbox"
-              checked={profile.path_style}
-              onChange={(event) =>
-                setProfile({ ...profile, path_style: event.target.checked })
-              }
-            />
-            {t("Use path-style addressing", "使用 path-style 地址")}
-          </label>
-          <div className="wide">
+        <div className="eyebrow">{t("STORAGE CONNECTION")}</div>
+        <h2>{t("Configure S3")}</h2>
+        <form className="storage-form" onSubmit={save}>
+          <div className="form-grid">
+            <label>
+              {t("Provider")}
+              <SelectControl
+                ariaLabel={t("Provider")}
+                value={profile.provider}
+                onValueChange={(value) =>
+                  setProfile({ ...profile, provider: value })
+                }
+                options={[
+                  { value: "aws", label: "AWS S3" },
+                  { value: "minio", label: "MinIO" },
+                  { value: "r2", label: "Cloudflare R2" },
+                  { value: "custom", label: "Custom" },
+                ]}
+              />
+            </label>
+            <label>
+              {t("Region")}
+              <input
+                value={profile.region}
+                onChange={(event) =>
+                  setProfile({ ...profile, region: event.target.value })
+                }
+              />
+            </label>
+            <label className="wide">
+              Endpoint{" "}
+              <small>
+                {profile.provider === "aws"
+                  ? t("Optional for AWS default endpoint")
+                  : t("Required for this provider")}
+              </small>
+              <input
+                required={profile.provider !== "aws"}
+                value={profile.endpoint}
+                placeholder="https://s3.example.com"
+                onChange={(event) =>
+                  setProfile({ ...profile, endpoint: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              Bucket
+              <input
+                required
+                value={profile.bucket}
+                onChange={(event) =>
+                  setProfile({ ...profile, bucket: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              Prefix
+              <input
+                value={profile.prefix}
+                onChange={(event) =>
+                  setProfile({ ...profile, prefix: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              Access key
+              <input
+                value={profile.access_key_id}
+                autoComplete="off"
+                onChange={(event) =>
+                  setProfile({ ...profile, access_key_id: event.target.value })
+                }
+              />
+            </label>
+            <label>
+              Secret key
+              <input
+                type="password"
+                value={profile.secret_access_key}
+                autoComplete="new-password"
+                onChange={(event) =>
+                  setProfile({
+                    ...profile,
+                    secret_access_key: event.target.value,
+                  })
+                }
+              />
+            </label>
+            <label className="wide checkline">
+              <input
+                type="checkbox"
+                checked={profile.path_style}
+                onChange={(event) =>
+                  setProfile({ ...profile, path_style: event.target.checked })
+                }
+              />
+              {t("Use path-style addressing")}
+            </label>
+          </div>
+          <div className="form-actions">
             <button className="secondary" disabled={busy}>
-              {t("Save storage settings", "保存存储设置")}
+              {t("Save storage settings")}
             </button>
           </div>
         </form>
@@ -1761,7 +2098,7 @@ function Settings({
   request,
   setMessage,
 }: {
-  t: (en: string, zh: string) => string;
+  t: Translator;
   request: ApiRequest;
   setMessage: (value: { good?: string; bad?: string }) => void;
 }) {
@@ -1775,7 +2112,7 @@ function Settings({
       });
       setPassword("");
       setMessage({
-        good: t("Password enabled for web access.", "已为 Web 访问启用密码。"),
+        good: t("Password enabled for web access."),
       });
     } catch (error) {
       setMessage({ bad: String(error) });
@@ -1783,17 +2120,15 @@ function Settings({
   };
   return (
     <section className="card narrow">
-      <div className="eyebrow">{t("ACCESS CONTROL", "访问控制")}</div>
-      <h2>{t("Web authentication", "Web 认证")}</h2>
+      <div className="eyebrow">{t("ACCESS CONTROL")}</div>
+      <h2>{t("Web authentication")}</h2>
       <p className="muted">
         {t(
-          "Portalis permits passwordless access only when no Web password is configured and both the TCP peer and HTTP Host are loopback. Configure a strong password before exposing the web listener or using a reverse proxy. Cross-origin writes are rejected.",
-          "Portalis 仅在未配置 Web 密码且 TCP 对端与 HTTP Host 都是本机地址时允许免密码访问。暴露 Web 监听或使用反向代理前，请先配置强密码。跨域写操作会被拒绝。",
-        )}
+          "Portalis permits passwordless access only when no Web password is configured and both the TCP peer and HTTP Host are loopback. Configure a strong password before exposing the web listener or using a reverse proxy. Cross-origin writes are rejected.")}
       </p>
       <form onSubmit={save}>
         <label>
-          {t("New password (12+ characters)", "新密码（至少 12 个字符）")}
+          {t("New password (12+ characters)")}
           <input
             type="password"
             minLength={12}
@@ -1803,16 +2138,14 @@ function Settings({
           />
         </label>
         <button className="primary" type="submit">
-          {t("Set password", "设置密码")}
+          {t("Set password")}
         </button>
       </form>
       <div className="info-block">
-        <strong>{t("SSH protection", "SSH 保护")}</strong>
+        <strong>{t("SSH protection")}</strong>
         <span>
           {t(
-            "TCP/UDP forwarding rules that overlap detected SSH ports are rejected by default. Portalis never changes SSH or global firewall policies.",
-            "默认拒绝覆盖检测到的 SSH 端口的 TCP/UDP 转发规则。Portalis 不会修改 SSH 或全局防火墙策略。",
-          )}
+            "TCP/UDP forwarding rules that overlap detected SSH ports are rejected by default. Portalis never changes SSH or global firewall policies.")}
         </span>
       </div>
     </section>

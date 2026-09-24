@@ -42,6 +42,7 @@ pub fn router(runtime: Runtime) -> Router {
     Router::new()
         .route("/api/v1/auth", get(auth_status))
         .route("/api/v1/auth/password", post(set_password))
+        .route("/api/v1/about", get(about))
         .route("/api/v1/status", get(status))
         .route("/api/v1/rules", get(rules))
         .route("/api/v1/draft", get(get_draft).put(save_draft))
@@ -180,6 +181,37 @@ async fn set_password(
         Ok(()) => Json(serde_json::json!({ "password_enabled": true })).into_response(),
         Err(error) => internal(error),
     }
+}
+
+async fn about() -> Response {
+    let operating_system = std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|contents| {
+            contents.lines().find_map(|line| {
+                let value = line.strip_prefix("PRETTY_NAME=")?;
+                let value = value.trim().trim_matches('"').trim_matches('\'').trim();
+                (!value.is_empty()).then(|| value.to_owned())
+            })
+        })
+        .unwrap_or_else(|| std::env::consts::OS.to_owned());
+
+    Json(serde_json::json!({
+        "name": "Portalis",
+        "version": env!("CARGO_PKG_VERSION"),
+        "hostname": read_system_value("/proc/sys/kernel/hostname"),
+        "operating_system": operating_system,
+        "kernel_release": read_system_value("/proc/sys/kernel/osrelease"),
+        "architecture": std::env::consts::ARCH,
+        "api_version": "v1",
+    }))
+    .into_response()
+}
+
+fn read_system_value(path: &str) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 async fn status(State(runtime): State<Runtime>) -> Response {
