@@ -270,10 +270,12 @@ fn add_prerouting_rules(
             plan.listen_port.start.saturating_add(offset as u16),
             plan.listen_port.start.saturating_add(offset as u16),
         );
-        let target_port = PortRange::new(
-            plan.target_port.start.saturating_add(offset as u16),
-            plan.target_port.start.saturating_add(offset as u16),
-        );
+        let target_port = if plan.target_port.is_single() {
+            plan.target_port
+        } else {
+            let port = plan.target_port.start.saturating_add(offset as u16);
+            PortRange::new(port, port)
+        };
         for source in &sources {
             let mut rule = Rule::new(chain);
             set_rule_comment(&mut rule, plan)?;
@@ -870,6 +872,136 @@ mod tests {
         let (counters, observed_rule_counts) = aggregate_rule_counters(&dump);
         assert_eq!(counters[&(id, Protocol::Tcp)], (150, 3_000_000));
         assert_eq!(observed_rule_counts[&(id, Protocol::Tcp)], 2);
+    }
+
+    #[test]
+    #[ignore = "requires CAP_NET_ADMIN in a disposable network namespace, ip, and python3"]
+    fn netlink_udp_port_hopping_to_single_target() {
+        use std::{net::UdpSocket, process::Command, time::Duration};
+
+        if std::env::var_os("PORTALIS_NFT_INTEGRATION").is_none() {
+            return;
+        }
+        // Always stop the peer, including when an assertion fails. Its veth is removed with it.
+        struct Peer(std::process::Child);
+        impl Drop for Peer {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let peer = Peer(
+            Command::new("unshare")
+                .args(["-n", "sleep", "30"])
+                .spawn()
+                .unwrap(),
+        );
+        let peer_pid = peer.0.id().to_string();
+        let current_ns = std::fs::read_link("/proc/self/ns/net").unwrap();
+        let mut ready = false;
+        for _ in 0..100 {
+            if std::fs::read_link(format!("/proc/{peer_pid}/ns/net"))
+                .is_ok_and(|namespace| namespace != current_ns)
+            {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(ready, "peer network namespace did not start");
+        for args in [
+            vec![
+                "link", "add", "hop-a", "type", "veth", "peer", "name", "hop-b",
+            ],
+            vec!["addr", "add", "198.18.0.1/24", "dev", "hop-a"],
+            vec!["link", "set", "hop-b", "netns", &peer_pid],
+            vec!["link", "set", "hop-a", "up"],
+        ] {
+            assert!(Command::new("ip").args(args).status().unwrap().success());
+        }
+        for args in [
+            vec!["addr", "add", "198.18.0.2/24", "dev", "hop-b"],
+            vec!["link", "set", "hop-b", "up"],
+        ] {
+            assert!(
+                Command::new("nsenter")
+                    .args(["-t", &peer_pid, "-n", "ip"])
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let config = Config {
+            schema_version: SCHEMA_VERSION,
+            rules: vec![ForwardRule {
+                id: uuid::Uuid::new_v4(),
+                name: "port-hopping".into(),
+                comment: String::new(),
+                enabled: true,
+                order: 0,
+                allow_ssh_conflict: false,
+                family: AddressFamily::Auto,
+                listen_address: ListenAddress::Any,
+                listen_interface: None,
+                source_cidrs: Vec::new(),
+                protocols: Protocols::UDP,
+                listen_port: PortRange::new(20020, 20040),
+                target_ip: "198.18.0.1".parse().unwrap(),
+                target_port: PortRange::new(443, 443),
+                snat: SnatMode::Masquerade,
+            }],
+        };
+        config
+            .validate(&portalis_core::ValidationContext::default())
+            .unwrap();
+        let controller = NftnlController::new();
+        assert_eq!(controller.apply(&config).unwrap().rule_count, 22);
+        let listener = UdpSocket::bind("198.18.0.1:443").unwrap();
+        listener
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut sender = Command::new("nsenter")
+            .args([
+                "-t",
+                &peer_pid,
+                "-n",
+                "python3",
+                "-c",
+                r#"
+import socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.settimeout(3)
+for port in range(20020, 20041):
+    payload = str(port).encode()
+    sock.sendto(payload, ('198.18.0.1', port))
+    reply, address = sock.recvfrom(64)
+    assert reply == payload and address == ('198.18.0.1', port), (reply, address)
+for port in (20019, 20041):
+    sock.sendto(b'outside', ('198.18.0.1', port))
+"#,
+            ])
+            .spawn()
+            .unwrap();
+        for port in 20020..=20040 {
+            let mut buffer = [0; 64];
+            let (length, address) = listener
+                .recv_from(&mut buffer)
+                .expect("every listen port must reach 443");
+            assert_eq!(&buffer[..length], port.to_string().as_bytes());
+            listener.send_to(&buffer[..length], address).unwrap();
+        }
+        assert!(sender.wait().unwrap().success());
+        listener
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let error = listener.recv_from(&mut [0; 64]).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        ));
+        let status = controller.status(&config).unwrap();
+        assert!(status.table_present && !status.drifted);
     }
 
     #[test]

@@ -210,7 +210,9 @@ pub enum ValidationError {
     NoProtocol { id: Uuid },
     #[error("rule {id} has an invalid port range {start}-{end}")]
     InvalidPortRange { id: Uuid, start: u16, end: u16 },
-    #[error("rule {id} listen and target port ranges must have the same length")]
+    #[error(
+        "rule {id} target must be a single port or a range with the same length as the listen range"
+    )]
     RangeLengthMismatch { id: Uuid },
     #[error("rule {id} target address {address} does not match {family:?}")]
     TargetFamilyMismatch {
@@ -331,7 +333,7 @@ fn validate_rule(
             end: rule.target_port.end,
         });
     }
-    if rule.listen_port.len() != rule.target_port.len() {
+    if !rule.target_port.is_single() && rule.listen_port.len() != rule.target_port.len() {
         errors.push(ValidationError::RangeLengthMismatch { id: rule.id });
     }
     let family = rule.family.effective(rule.target_ip);
@@ -560,6 +562,28 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(config.plan().len(), 1);
+    }
+
+    #[test]
+    fn port_hopping_range_to_single_target_is_valid() {
+        let mut forward = rule(
+            Uuid::new_v4(),
+            Protocols::UDP,
+            PortRange::new(20020, 20040),
+            PortRange::new(443, 443),
+        );
+        forward.family = AddressFamily::Auto;
+        forward.target_ip = "18.176.104.120".parse().unwrap();
+        let config = Config {
+            schema_version: SCHEMA_VERSION,
+            rules: vec![forward],
+        };
+        assert_eq!(config.validate(&ValidationContext::default()), Ok(()));
+        let plan = config.plan();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].protocol, Protocol::Udp);
+        assert_eq!(plan[0].listen_port, PortRange::new(20020, 20040));
+        assert_eq!(plan[0].target_port, PortRange::new(443, 443));
     }
 
     #[test]

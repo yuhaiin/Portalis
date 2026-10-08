@@ -1727,7 +1727,11 @@ function RuleEditor({
               }
             />
           </span>
-          <small>{t("Ranges map one-to-one")}</small>
+          <small>
+            {t(
+              "Use the same start and end to forward all listen ports to one target port. Target ranges must match the listen range length and map one-to-one.",
+            )}
+          </small>
         </label>
         <label className="wide">
           {t("Target IP")}

@@ -11,7 +11,7 @@ The name comes from “portal”: a controlled gateway between a listening addre
 ## Safety model
 
 - Save creates a draft. Apply validates the draft and sends one nftables Netlink batch.
-- A rule with TCP and UDP becomes two kernel rules. Equal-length ranges are expanded per port so `12102-12104` maps one-to-one to the target range.
+- A rule with TCP and UDP is expanded for each protocol. Equal-length ranges map one-to-one, for example `12102-12104` to `22102-22104`. A single target port maps every listen port to that port, for example UDP `20020-20040` to `443-443` for port hopping. Both forms are expanded into per-port kernel rules.
 - SSH ports detected from `/etc/ssh/sshd_config` (22 by default) are rejected. The default web listener is `127.0.0.1:17890`; exposing it elsewhere requires a password for non-loopback clients. For an isolated Podman test only, `--allow-unauthenticated` disables Web authentication.
 - Portalis uses passive NAT chains with `accept` policy. Existing firewall policy remains responsible for forwarding; the UI warns about forwarding/sysctl and kernel drift.
 - IPv4/IPv6 forwarding is enabled only when an active rule requires that family, and persisted in `/etc/sysctl.d/99-portalis.conf`.
