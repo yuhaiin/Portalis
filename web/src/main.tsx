@@ -32,6 +32,7 @@ import {
   IconServer,
   IconSettings,
   IconUserCircle,
+  IconX,
 } from "@tabler/icons-react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -396,7 +397,7 @@ async function api<T>(
   if (!response.ok)
     throw new Error(
       data.error ||
-        data.errors?.join("; ") ||
+        data.errors?.join("\n") ||
         `Request failed (${response.status})`,
     );
   return data as T;
@@ -802,6 +803,29 @@ function App() {
 
   return (
     <div className="shell">
+      {(message.good || message.bad) &&
+        createPortal(
+          <div className="notification-region">
+            <div
+              className={`toast ${message.bad ? "bad" : "good"}`}
+              role={message.bad ? "alert" : "status"}
+            >
+              <span aria-hidden="true">{message.bad ? "!" : "✓"}</span>
+              <span className="notification-message">
+                {message.bad || message.good}
+              </span>
+              <button
+                type="button"
+                className="notification-close"
+                aria-label={t("Dismiss notification")}
+                onClick={() => setMessage({})}
+              >
+                <IconX size={17} stroke={1.8} />
+              </button>
+            </div>
+          </div>,
+          document.body,
+        )}
       <header className="topbar">
         <div className="brand">
           <img className="brand-mark" src="/portalis-icon.svg" alt="" />
@@ -952,8 +976,6 @@ function App() {
               </button>
             )}
           </div>
-          {message.good && <div className="toast good">✓ {message.good}</div>}
-          {message.bad && <div className="toast bad">! {message.bad}</div>}
           {tab === "overview" && (
             <Overview
               status={status}

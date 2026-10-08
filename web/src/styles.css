@@ -347,7 +347,6 @@ main {
 }
 
 main > .page-head,
-main > .toast,
 main > .warning,
 main > .metric-grid,
 main > .card,
@@ -613,6 +612,46 @@ h2 {
   border-color: #eed8d2;
   background: var(--red-soft);
   color: #995356;
+}
+
+.notification-region {
+  position: fixed;
+  top: 82px;
+  right: max(16px, calc((100vw - 1680px) / 2 + 24px));
+  z-index: 15;
+  width: min(640px, calc(100vw - 32px));
+}
+
+.notification-region .toast {
+  width: 100%;
+  max-height: calc(100dvh - 110px);
+  overflow-y: auto;
+  box-shadow: 0 8px 28px #283c3426;
+}
+
+.notification-message {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.notification-close {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  margin: -3px -5px -3px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+
+.notification-close:hover {
+  background: #283c3410;
 }
 
 .warning span:first-child {
@@ -1670,7 +1709,6 @@ input[type="checkbox"] {
   }
 
   main > .page-head,
-  main > .toast,
   main > .warning,
   main > .metric-grid,
   main > .card,
