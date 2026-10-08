@@ -389,6 +389,9 @@ fn validate_rule(
 }
 
 fn addresses_overlap(first: &ForwardRule, second: &ForwardRule) -> bool {
+    if first.family.effective(first.target_ip) != second.family.effective(second.target_ip) {
+        return false;
+    }
     if first.listen_interface != second.listen_interface
         && first.listen_interface.is_some()
         && second.listen_interface.is_some()
@@ -646,6 +649,86 @@ mod tests {
                 .iter()
                 .any(|error| matches!(error, ValidationError::SshPortConflict { port: 22, .. }))
         );
+    }
+
+    #[test]
+    fn different_address_families_can_share_listen_port_range() {
+        for protocols in [Protocols::TCP, Protocols::UDP, Protocols::BOTH] {
+            for ipv6_family in [AddressFamily::Auto, AddressFamily::Ipv6] {
+                for ipv4_family in [AddressFamily::Auto, AddressFamily::Ipv4] {
+                    let rules = [
+                        (ipv6_family, "2406:da14:12:df00:1d04:39a3:87cf:f9e7"),
+                        (ipv4_family, "18.176.104.120"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, (family, target_ip))| {
+                        let mut item = rule(
+                            Uuid::new_v4(),
+                            protocols,
+                            PortRange::new(20020, 20040),
+                            PortRange::new(443, 443),
+                        );
+                        item.order = index as u32;
+                        item.family = family;
+                        item.target_ip = target_ip.parse().unwrap();
+                        item
+                    })
+                    .collect();
+                    let config = Config {
+                        schema_version: SCHEMA_VERSION,
+                        rules,
+                    };
+                    assert_eq!(config.validate(&ValidationContext::default()), Ok(()));
+                    let plan = config.plan();
+                    let protocol_count = protocols.iter().count();
+                    assert_eq!(plan.len(), 2 * protocol_count);
+                    assert!(plan[..protocol_count].iter().all(|item| {
+                        item.family == AddressFamily::Ipv6 && item.target_ip.is_ipv6()
+                    }));
+                    assert!(plan[protocol_count..].iter().all(|item| {
+                        item.family == AddressFamily::Ipv4 && item.target_ip.is_ipv4()
+                    }));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn same_family_udp_rules_with_distinct_targets_are_rejected() {
+        for (family, targets) in [
+            (AddressFamily::Ipv4, ["192.0.2.10", "192.0.2.20"]),
+            (AddressFamily::Ipv6, ["2001:db8::10", "2001:db8::20"]),
+        ] {
+            for configured_family in [AddressFamily::Auto, family] {
+                let rules = targets
+                    .into_iter()
+                    .map(|target_ip| {
+                        let mut item = rule(
+                            Uuid::new_v4(),
+                            Protocols::UDP,
+                            PortRange::new(20020, 20040),
+                            PortRange::new(443, 443),
+                        );
+                        item.family = configured_family;
+                        item.target_ip = target_ip.parse().unwrap();
+                        item
+                    })
+                    .collect();
+                let config = Config {
+                    schema_version: SCHEMA_VERSION,
+                    rules,
+                };
+                assert_eq!(
+                    config.validate(&ValidationContext::default()),
+                    Err(vec![ValidationError::Overlap {
+                        first: config.rules[0].id,
+                        second: config.rules[1].id,
+                        protocol: Protocol::Udp,
+                    }])
+                );
+            }
+        }
     }
 
     #[test]
