@@ -163,7 +163,8 @@ jobs:
           set -euo pipefail
           podman network create portalis-integration
           trap 'podman rm -f portalis-minio-integration >/dev/null 2>&1 || true; podman network rm portalis-integration >/dev/null 2>&1 || true' EXIT
-          podman run -d --name portalis-minio-integration --network portalis-integration -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin quay.io/minio/minio:latest server /data
+          # Community MinIO builds; pin the release and digest for reproducible tests.
+          podman run -d --name portalis-minio-integration --network portalis-integration -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin ghcr.io/coollabsio/minio:RELEASE.2025-10-15T17-29-55Z@sha256:69b55a1c1c5dc285ce04db96689f5b2102317fc77a50680a1874ca6efd1c87f9 server /data
           test_bin="$(cat test-bin)"
           test -f "$test_bin"
           test -x "$test_bin"
